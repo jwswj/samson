@@ -15,10 +15,19 @@ task default: :test
 
 Rake::Task['test'].clear
 task :test do
-  bk_job = ENV['BUILDKITE_PARALLEL_JOB'].to_i
-  bk_job_count = ENV['BUILDKITE_PARALLEL_JOB_COUNT'].to_i
-  group = bk_job == 0 ? 1 : bk_job + 1
-  groups = bk_job_count == 0 ? 1 : bk_job_count
+  group = if ENV["BUILDKITE_PARALLEL_JOB"]
+    # Buildkite groups start at 0
+    ENV["BUILDKITE_PARALLEL_JOB"].to_i + 1
+  else
+    1
+  end
+
+  groups = if ENV["BUILDKITE_PARALLEL_JOB_COUNT"]
+    ENV["BUILDKITE_PARALLEL_JOB_COUNT"].to_i
+  else
+    1
+  end
+
   sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage --group #{group} --groups #{groups}"
 end
 
