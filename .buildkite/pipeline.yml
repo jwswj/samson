@@ -1,0 +1,95 @@
+steps:
+  - label: ":docker: Prebuild"
+    plugins:
+      - docker-compose#v3.0.0:
+          build: samson-test
+          build-alias:
+            - samson-test-sqlite
+            - samson-test-mysql
+            - samson-test-mysql-no-plugins
+          image-repository: 289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite
+          cache-from:
+            - samson-test:289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite:latest-${BUILDKITE_BRANCH}
+            - samson-test:289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite:latest
+
+  - wait
+
+  - name: ":rubocop: RuboCop"
+    command: "bundle exec rake rubocop"
+    plugins:
+      - docker-compose#v2.6.0:
+          run: samson-test
+    env:
+      RAILS_ENV: test
+
+  - name: ":brakeman: Brakeman"
+    command: "bundle exec rake brakeman"
+    plugins:
+      - docker-compose#v3.0.0:
+          run: samson-test
+    env:
+      RAILS_ENV: test
+
+  - name: "🛠Flay"
+    command: "bundle exec rake flay"
+    plugins:
+      - docker-compose#v3.0.0:
+          run: samson-test
+    env:
+      RAILS_ENV: test
+
+  - name: "🕵🏻‍♀️ Bundle Audit"
+    command: "bundle exec rake bundle_audit"
+    plugins:
+      - docker-compose#v3.0.0:
+          run: samson-test
+    env:
+      RAILS_ENV: test
+
+  - name: ":rspec: Test sqlite"
+    plugins:
+      - docker-compose#v3.0.0:
+          run: samson-test-sqlite
+    env:
+      RAILS_ENV: test
+    retry:
+      automatic:
+        - exit_status: -1
+
+  - name: ":rspec: Test mysql"
+    plugins:
+      - docker-compose#v3.0.0:
+          run: samson-test-mysql
+    env:
+      RAILS_ENV: test
+    retry:
+      automatic:
+        - exit_status: -1
+
+  - name: ":rspec: Test mysql (no plugins)"
+    plugins:
+      - docker-compose#v3.0.0:
+          run: samson-test-mysql-no-plugins
+    env:
+      RAILS_ENV: test
+    retry:
+      automatic:
+        - exit_status: -1
+
+  # - name: ":rspec: Test (postgres)"
+  #   plugins:
+  #     - docker-compose#v2.6.0:
+  #         run: samson-test-postgres
+  #   env:
+  #     RAILS_ENV: test
+  #   retry:
+  #     automatic:
+  #       - exit_status: -1
+
+  - wait
+  - label: ":docker: Push"
+    plugins:
+      - docker-compose#v3.0.0:
+          push:
+            - samson-test:289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite:latest
+            - samson-test:289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite:latest-${BUILDKITE_BRANCH}
