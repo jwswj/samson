@@ -28,7 +28,11 @@ task :test do
     1
   end
 
-  sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage --group #{group} --groups #{groups}"
+  if groups > 1
+    sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage --group #{group} --groups #{groups}"
+  else
+    sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test"
+  end
 end
 
 task :asset_compilation_environment do
