@@ -2,6 +2,7 @@ steps:
   - label: ":docker: Prebuild"
     plugins:
       - docker-compose#v3.0.0:
+          config: .buildkite/docker-compose.yml
           build: samson-test
           build-alias:
             - samson-test-sqlite
@@ -19,6 +20,7 @@ steps:
     plugins:
       - docker-compose#v2.6.0:
           run: samson-test
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
 
@@ -27,6 +29,7 @@ steps:
     plugins:
       - docker-compose#v3.0.0:
           run: samson-test
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
 
@@ -35,6 +38,7 @@ steps:
     plugins:
       - docker-compose#v3.0.0:
           run: samson-test
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
 
@@ -43,6 +47,7 @@ steps:
     plugins:
       - docker-compose#v3.0.0:
           run: samson-test
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
 
@@ -50,6 +55,7 @@ steps:
     plugins:
       - docker-compose#v3.0.0:
           run: samson-test-sqlite
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
     retry:
@@ -60,6 +66,7 @@ steps:
     plugins:
       - docker-compose#v3.0.0:
           run: samson-test-mysql
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
     retry:
@@ -70,6 +77,7 @@ steps:
     plugins:
       - docker-compose#v3.0.0:
           run: samson-test-mysql-no-plugins
+          config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
     retry:
@@ -90,6 +98,7 @@ steps:
   - label: ":docker: Push"
     plugins:
       - docker-compose#v3.0.0:
+          config: .buildkite/docker-compose.yml
           push:
             - samson-test:289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite:latest
             - samson-test:289540927910.dkr.ecr.us-east-2.amazonaws.com/samson-buildkite:latest-${BUILDKITE_BRANCH}
