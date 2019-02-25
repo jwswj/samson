@@ -58,6 +58,7 @@ steps:
           config: .buildkite/docker-compose.yml
     env:
       RAILS_ENV: test
+    parallelism: 2
     retry:
       automatic:
         - exit_status: -1

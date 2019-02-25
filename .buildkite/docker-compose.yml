@@ -7,7 +7,18 @@ services:
       context: ../
       dockerfile: .buildkite/Dockerfile
     environment:
-      BUNDLE_WITHOUT: postgres:mysql
+      # CI envs
+      CI:
+      RAILS_ENV:
+      TRAVIS: 1
+      # CI envs For Buildkite
+      BUILDKITE_PARALLEL_JOB:
+      BUILDKITE_PARALLEL_JOB_COUNT:
+      BUILDKITE_COMMIT:
+      BUILDKITE_BRANCH:
+      BUILDKITE_REPO:
+      BUILDKITE_BUILD_ID:
+      BUILDKITE_BUILD_NUMBER:
 
   # run samson in test mode against sqlite
   samson-test-sqlite:

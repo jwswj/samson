@@ -15,7 +15,11 @@ task default: :test
 
 Rake::Task['test'].clear
 task :test do
-  sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage --quiet"
+  bk_job = ENV['BUILDKITE_PARALLEL_JOB'].to_i
+  bk_job_count = ENV['BUILDKITE_PARALLEL_JOB_COUNT'].to_i
+  group = bk_job == 0 ? 1 : bk_job + 1
+  groups = bk_job_count == 0 ? 1 : bk_job_count
+  sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage --group #{group} --groups #{groups}"
 end
 
 task :asset_compilation_environment do
