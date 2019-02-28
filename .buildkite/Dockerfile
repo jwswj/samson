@@ -35,7 +35,7 @@ RUN npm install --silent
 # Copy in ruby deps
 COPY .ruby-version Gemfile Gemfile.lock /app/
 COPY plugins /app/plugins
-RUN bundle install --jobs $(nproc)
+RUN bundle install --jobs 8
 
 # Copy source code
 COPY --chown=samson:samson . /app/
