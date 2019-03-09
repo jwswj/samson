@@ -214,13 +214,13 @@ class Deploy < ActiveRecord::Base
   def csv_line
     [
       id, project.name, summary, commit, job.status, updated_at, start_time, user.try(:name), user.try(:email),
-      buddy_name, buddy_email, stage.name, stage.production?, !stage.no_code_deployed, project.deleted_at,
+      buddy_name, buddy_email, stage.name, production, !stage.no_code_deployed, project.deleted_at,
       stage.deploy_group_names.join('|')
     ]
   end
 
   def as_json
-    hash = super(methods: [:status, :url, :production])
+    hash = super(methods: [:status, :url, :production, :commit])
     hash["summary"] = summary_for_timeline
     hash
   end

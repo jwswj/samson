@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require_relative '../test_helper'
 
-SingleCov.covered! uncovered: 1
+SingleCov.covered!
 
 describe ApplicationController do
   class ApplicationTestController < ApplicationController
@@ -54,15 +54,15 @@ describe ApplicationController do
       end
 
       it "does not redirect to hacky url in redirect_to which might have come in via referrer" do
-        Rails.logger.expects(:error)
-        get :test_redirect_back, params: {test_route: true, redirect_to: 'http://hacks.com'}
-        assert_redirected_to '/fallback'
+        assert_raises do
+          get :test_redirect_back, params: {test_route: true, redirect_to: 'http://hacks.com'}
+        end.message.must_include "Invalid redirect_to parameter"
       end
 
       it "does not redirect to hacky hash in redirect_to" do
-        Rails.logger.expects(:error)
-        get :test_redirect_back, params: {test_route: true, redirect_to: {host: 'hacks.com', path: 'bar'}}
-        assert_redirected_to '/fallback'
+        assert_raises do
+          get :test_redirect_back, params: {test_route: true, redirect_to: {host: 'hacks.com', path: 'bar'}}
+        end.message.must_include "Invalid redirect_to parameter"
       end
 
       it "can set a notice" do
@@ -97,6 +97,13 @@ describe ApplicationController do
         assert_response :bad_request
         response.body.must_equal "{\"status\":400,\"error\":\"Wut\"}"
       end
+    end
+  end
+
+  describe "using_per_request_auth?" do
+    it 'cannot POST without authenticity_token when warden was not used (for controller tests)' do
+      request.env.delete 'warden'
+      refute @controller.send(:using_per_request_auth?)
     end
   end
 end

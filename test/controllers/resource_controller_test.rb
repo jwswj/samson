@@ -25,9 +25,21 @@ describe "ResourceController Integration" do
           assigns(:commands).size.must_equal 2
         end
 
+        it "renders with default" do
+          Lock.create!(user: users(:admin), description: "foo")
+          get locks_url(:json)
+          assert_response :success
+          assigns(:locks).size.must_equal 1
+        end
+
         it "can define the page size" do
           get commands_url, params: {per_page: 1}
           assigns(:commands).size.must_equal 1
+        end
+
+        it "renders without pagination" do
+          get project_stages_url(project_id: project), params: {per_page: 1}
+          assigns(:stages).size.must_equal 3
         end
       end
 
@@ -114,6 +126,11 @@ describe "ResourceController Integration" do
         it "creates" do
           post projects_url, params: {project: project_params}
           assert_redirected_to Project.last
+        end
+
+        it "can redirect to new" do
+          post projects_url, params: {project: project_params, commit: ResourceController::ADD_MORE}
+          assert_redirected_to "/projects/new?#{{project: project_params}.to_query}"
         end
 
         it "fails to creates" do
@@ -204,10 +221,16 @@ describe "ResourceController Integration" do
     end
 
     describe "#update" do
+      let(:project_params) { {name: "Baz2", description: "Gah2"} }
       describe "html" do
         it "updates" do
-          patch project_url(project), params: {project: {name: "Baz2", description: "Gah2"}}
+          patch project_url(project), params: {project: project_params}
           assert_redirected_to project
+        end
+
+        it "can redirect to new" do
+          patch project_url(project), params: {project: project_params, commit: ResourceController::ADD_MORE}
+          assert_redirected_to "/projects/new?#{{project: project_params}.to_query}"
         end
 
         it "fails to update" do
@@ -218,7 +241,7 @@ describe "ResourceController Integration" do
 
       describe "json" do
         it "updates" do
-          patch project_url(project, :json), params: {project: {name: "Baz2", description: "desc2"}}
+          patch project_url(project, :json), params: {project: project_params}
           assert_response :success
           assert_rendered_resource
         end

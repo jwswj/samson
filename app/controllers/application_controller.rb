@@ -25,10 +25,6 @@ class ApplicationController < ActionController::Base
 
   protected
 
-  def page
-    params.fetch(:page, 1)
-  end
-
   def force_ssl?
     ENV['FORCE_SSL'] == '1'
   end
@@ -44,15 +40,19 @@ class ApplicationController < ActionController::Base
   end
 
   def redirect_back(**options)
-    if param_location = params[:redirect_to].presence
-      if param_location.is_a?(String) && param_location.start_with?('/')
-        redirect_to URI("http://ignor.ed#{param_location}").request_uri, options # using URI to silence Brakeman
-        return
-      else
-        Rails.logger.error("Invalid redirect_to parameter #{param_location}")
-      end
+    if back = redirect_to_from_params
+      redirect_to back, options
+    else
+      super
     end
-    super
+  end
+
+  def redirect_to_from_params
+    return unless param_location = params[:redirect_to].presence
+    if !param_location.is_a?(String) || !param_location.start_with?('/')
+      raise "Invalid redirect_to parameter #{param_location}"
+    end
+    URI("http://ignor.ed#{param_location}").request_uri # using URI to silence Brakeman
   end
 
   def store_requested_oauth_scope

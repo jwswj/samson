@@ -109,7 +109,7 @@ module Kubernetes
             wait_start_time = Time.now.to_i
           end
         else
-          if too_many_not_ready # rubocop:disable Style/IfInsideElse
+          if too_many_not_ready
             print_statuses(statuses)
             unstable!('one or more pods are not live', not_ready_statuses)
             return false, statuses
@@ -161,6 +161,10 @@ module Kubernetes
     rescue
       info = ErrorNotifier.notify($!, sync: true)
       @output.puts "Error showing failure cause: #{info}"
+    ensure
+      @output.puts(
+        "Debug: disable 'Rollback on failure' when deploying and use 'kubectl describe pod <name>' on failed pods"
+      )
     end
 
     def print_pod_details(pod, log_end_time, events:)
@@ -214,9 +218,10 @@ module Kubernetes
     end
 
     # show what happened in kubernetes internally since we might not have any logs
+    # reloading the events so we see things added during+after pod restart
     def print_pod_events(pod)
       @output.puts "POD EVENTS:"
-      print_events(pod.events)
+      print_events(pod.events(reload: true))
     end
 
     def print_events(events)
@@ -339,13 +344,15 @@ module Kubernetes
 
     def grouped_deploy_group_roles
       @grouped_deploy_group_roles ||= begin
+        ignored_role_ids = @job.deploy.stage.kubernetes_roles.where(ignored: true).pluck(:kubernetes_role_id)
         deploy_group_roles = Kubernetes::DeployGroupRole.where(
           project_id: @job.project_id,
           deploy_group: @job.deploy.stage.deploy_groups.map(&:id)
-        )
+        ).where.not(kubernetes_role_id: ignored_role_ids)
 
         # roles that exist in the repo for this sha
-        roles_present_in_repo = Kubernetes::Role.configured_for_project(@job.project, @job.commit)
+        roles_present_in_repo = Kubernetes::Role.configured_for_project(@job.project, @job.commit).
+          reject { |role| ignored_role_ids.include?(role.id) }
 
         # check that all roles have a matching deploy_group_role
         # and all roles are configured

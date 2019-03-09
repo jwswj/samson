@@ -3,15 +3,21 @@ require 'csv'
 
 # Abstract controller that handles all resources, subclasses handle custom logic by overwriting
 class ResourceController < ApplicationController
+  ADD_MORE = 'Save and add another'
+
   include JsonRenderer
 
-  def index
+  def index(paginate: true)
     assign_resources(
-      pagy(
-        search_resources,
-        page: params[:page],
-        items: [Integer(params[:per_page] || 25), 100].min
-      )
+      if paginate
+        pagy(
+          search_resources,
+          page: params[:page],
+          items: [Integer(params[:per_page] || 25), 100].min
+        )
+      else
+        [nil, search_resources]
+      end
     )
     respond_to do |format|
       format.html
@@ -29,7 +35,9 @@ class ResourceController < ApplicationController
       format.html do
         if @resource.save
           create_callback
-          redirect_back fallback_location: resource_path, notice: "Created!"
+
+          flash[:notice] = "Created!"
+          redirect_after_save
         else
           flash[:alert] = "Failed to create!"
           render template
@@ -57,7 +65,8 @@ class ResourceController < ApplicationController
     respond_to do |format|
       format.html do
         if @resource.update(resource_params)
-          redirect_back fallback_location: resource_path, notice: "Updated!"
+          flash[:notice] = "Updated!"
+          redirect_after_save
         else
           render template
         end
@@ -81,7 +90,7 @@ class ResourceController < ApplicationController
     respond_to do |format|
       format.html do
         if success
-          redirect_to resources_path, notice: "Destroyed!"
+          redirect_to(redirect_to_from_params || resources_path, notice: "Destroyed!")
         else
           error_message = <<~TEXT
             #{resource_class.name} could not be destroyed because:
@@ -99,7 +108,16 @@ class ResourceController < ApplicationController
 
   private
 
+  def redirect_after_save
+    if params[:commit] == ADD_MORE
+      redirect_to action: :new, resource_name => params.fetch(resource_name).to_unsafe_h
+    else
+      redirect_to(redirect_to_from_params || resource_path)
+    end
+  end
+
   def search_resources
+    resource_class
   end
 
   # hook
