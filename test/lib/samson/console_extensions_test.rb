@@ -80,7 +80,7 @@ describe Samson::ConsoleExtensions do
   describe "#flamegraph" do
     it "can graph" do
       capture_stdout do
-        flamegraph(name: "foo", raw: true) { sleep 0.1 }
+        flamegraph(name: "foo") { sleep 0.1 }
       end
       assert File.exist?("foo.js")
     ensure
