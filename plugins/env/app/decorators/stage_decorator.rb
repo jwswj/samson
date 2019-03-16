@@ -1,4 +1,4 @@
 # frozen_string_literal: true
-Deploy.class_eval do
+Stage.class_eval do
   include AcceptsEnvironmentVariables
 end

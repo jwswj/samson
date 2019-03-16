@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require_relative '../test_helper'
 
-SingleCov.covered! uncovered: 1
+SingleCov.covered!
 
 describe SamsonDatadog do
   let(:deploy) { deploys(:succeeded_test) }
@@ -61,6 +61,11 @@ describe SamsonDatadog do
       GithubDeployment.any_instance.expects(:create)
       Samson::Hooks.fire(:before_deploy, deploy, nil)
     end
+
+    it "does not create a github deployment when not enabled" do
+      stage.use_github_deployment_api = false
+      Samson::Hooks.fire(:before_deploy, deploy, nil)
+    end
   end
 
   describe :repo_provider_status do
@@ -68,18 +73,18 @@ describe SamsonDatadog do
       Samson::Hooks.fire(:repo_provider_status)
     end
 
-    let(:status_url) { "#{SamsonGithub::STATUS_URL}/api/status.json" }
+    let(:status_url) { "#{SamsonGithub::STATUS_URL}/api/v2/status.json" }
 
     around { |t| Samson::Hooks.only_callbacks_for_plugin('github', :repo_provider_status, &t) }
 
     it "reports good response" do
-      assert_request(:get, status_url, to_return: {body: {status: 'good'}.to_json}) do
+      assert_request(:get, status_url, to_return: {body: {status: {indicator: 'none'}}.to_json}) do
         fire.must_equal [nil]
       end
     end
 
     it "reports bad response" do
-      assert_request(:get, status_url, to_return: {body: {status: 'bad'}.to_json}) do
+      assert_request(:get, status_url, to_return: {body: {status: {indicator: 'critical'}}.to_json}) do
         fire.to_s.must_include "GitHub may be having problems"
       end
     end
@@ -94,6 +99,41 @@ describe SamsonDatadog do
       assert_request(:get, status_url, to_timeout: []) do
         fire.to_s.must_include "GitHub may be having problems"
       end
+    end
+  end
+
+  describe :changeset_api_request do
+    let(:project) { Project.new(repository_url: 'ssh://git@github.com:foo/bar.git') }
+    let(:changeset) { Changeset.new(project, "a", "b") }
+
+    def fire(method)
+      Samson::Hooks.fire(:changeset_api_request, changeset, method)
+    end
+
+    around { |t| Samson::Hooks.only_callbacks_for_plugin('github', :changeset_api_request, &t) }
+
+    it "skips non-gitlab" do
+      project.stubs(:github?).returns(false)
+      fire(:branch).must_equal [nil]
+    end
+
+    it "calls branch api endpoint" do
+      stub_github_api("repos/foo/bar/branches/b", commit: {sha: "foo"})
+      fire(:branch).must_equal ["foo"]
+    end
+
+    it "calls compare api endpoint" do
+      stub_github_api("repos/foo/bar/compare/a...b", "x" => "y")
+      fire(:compare).first.to_h.must_equal x: "y"
+    end
+
+    it "requires a valid method" do
+      assert_raises(NoMethodError) { fire(:bad) }
+    end
+
+    it "catches exception and returns NullComparison" do
+      stub_github_api("repos/foo/bar/compare/a...b", {}, 301)
+      assert_raises(RuntimeError) { fire(:compare).first }.message.must_include "GitHub: Get https://"
     end
   end
 end

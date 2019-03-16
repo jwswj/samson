@@ -61,7 +61,8 @@ module Samson
       :trace_method,
       :trace_scope,
       :asynchronous_performance_tracer,
-      :repo_provider_status
+      :repo_provider_status,
+      :changeset_api_request
     ].freeze
 
     # Hooks that are slow and we want performance info on
@@ -173,7 +174,7 @@ module Samson
       def only_callbacks_for_plugin(plugin_name, hook_name)
         original_hooks = @hooks[hook_name]
         @hooks[hook_name] = @hooks[hook_name].select do |proc|
-          proc.source_location.first.include?(plugin_name)
+          proc.source_location.first.include?("/#{plugin_name}/")
         end
         yield
       ensure
