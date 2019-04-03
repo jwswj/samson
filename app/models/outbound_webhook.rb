@@ -6,8 +6,8 @@ class OutboundWebhook < ActiveRecord::Base
   has_soft_deletion default_scope: true
   include SoftDeleteWithDestroy
 
-  belongs_to :project
-  belongs_to :stage
+  belongs_to :project, inverse_of: :outbound_webhooks
+  belongs_to :stage, inverse_of: :outbound_webhooks
 
   validates :url, uniqueness: {
     scope: :stage_id,
@@ -43,7 +43,7 @@ class OutboundWebhook < ActiveRecord::Base
     )
   end
 
-  def as_json
+  def as_json(*)
     super(except: [:password])
   end
 

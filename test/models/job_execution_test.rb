@@ -295,7 +295,8 @@ describe JobExecution do
   end
 
   it "reports to statsd" do
-    Samson.statsd.expects(:histogram).
+    Samson.statsd.stubs(:timing)
+    Samson.statsd.expects(:timing).
       with('execute_shell.time', anything, tags: ['project:duck', 'stage:stage4', 'production:false'])
     assert execute_job("master")
   end
@@ -305,7 +306,7 @@ describe JobExecution do
 
     before do
       stage.update_column(:builds_in_environment, true)
-      Samson::BuildFinder.any_instance.expects(:ensure_successful_builds).returns([build])
+      Samson::BuildFinder.any_instance.expects(:ensure_succeeded_builds).returns([build])
     end
 
     it "makes builds available via env" do

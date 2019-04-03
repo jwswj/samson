@@ -5,18 +5,21 @@ class Deploy < ActiveRecord::Base
   has_soft_deletion default_scope: true
 
   include SoftDeleteWithDestroy
+  extend Inlinable
 
-  belongs_to :stage, touch: true
-  belongs_to :build, optional: true
-  belongs_to :project
-  belongs_to :job
-  belongs_to :buddy, -> { unscope(where: "deleted_at") }, class_name: 'User', optional: true
+  belongs_to :stage, touch: true, inverse_of: :deploys
+  belongs_to :build, optional: true, inverse_of: :deploys
+  belongs_to :project, inverse_of: :deploys
+  belongs_to :job, inverse_of: :deploy
+  belongs_to :buddy, -> { unscope(where: "deleted_at") }, class_name: 'User', optional: true, inverse_of: nil
 
   default_scope { order(id: :desc) }
 
   validates_presence_of :reference
   validate :validate_stage_is_unlocked, on: :create
   validate :validate_stage_uses_deploy_groups_properly, on: :create
+
+  allow_inline :previous_commit
 
   delegate(
     :started_by?, :cancel, :status, :user, :output, :active?, :finished?, *Job::VALID_STATUSES.map { |s| "#{s}?" },
@@ -89,16 +92,20 @@ class Deploy < ActiveRecord::Base
     stage.deploys.prior_to(self).first
   end
 
-  def previous_successful_deploy
-    stage.deploys.successful.prior_to(self).first
+  def previous_succeeded_deploy
+    stage.deploys.succeeded.prior_to(self).first
   end
 
-  def next_successful_deploy
-    stage.deploys.successful.after(self).first
+  def next_succeeded_deploy
+    stage.deploys.succeeded.after(self).first
+  end
+
+  def previous_commit
+    previous_succeeded_deploy&.commit
   end
 
   def changeset
-    @changeset ||= changeset_to(previous_successful_deploy)
+    @changeset ||= changeset_to(previous_succeeded_deploy)
   end
 
   def changeset_to(other)
@@ -160,7 +167,7 @@ class Deploy < ActiveRecord::Base
     joins(:job).where(jobs: {status: 'running'})
   end
 
-  def self.successful
+  def self.succeeded
     joins(:job).where(jobs: {status: 'succeeded'})
   end
 
@@ -219,8 +226,8 @@ class Deploy < ActiveRecord::Base
     ]
   end
 
-  def as_json
-    hash = super(methods: [:status, :url, :production, :commit])
+  def as_json(methods: [])
+    hash = super(methods: [:status, :url, :production, :commit] + methods)
     hash["summary"] = summary_for_timeline
     hash
   end

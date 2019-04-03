@@ -17,6 +17,7 @@ class GitRepository
     @repository_url = repository_url
     @repository_directory = repository_dir
     @executor = executor
+    @instance_cache = {}
   end
 
   def checkout_workspace(work_dir, git_reference)
@@ -68,23 +69,18 @@ class GitRepository
   add_tracer :clean!
 
   def valid_url?
-    return false if repository_url.blank?
-    output = capture_stdout "git", "-c", "core.askpass=true", "ls-remote", "-h", repository_url, dir: '.'
-    Rails.logger.error("Repository Path '#{repository_url}' is unreachable") unless output
-    !!output
+    !!capture_stdout("git", "-c", "core.askpass=true", "ls-remote", "-h", repository_url, dir: '.')
   end
 
   # updates the repo only if sha is not found, to not pull unnecessarily
   # @return [content, nil]
   def file_content(file, sha, pull: true)
-    if !pull
-      return unless mirrored?
-    elsif sha.match?(Build::SHA1_REGEX)
-      (mirrored? && sha_exist?(sha)) || ensure_mirror_current
-    else
-      ensure_mirror_current
+    pull = false if mirror_current? # no need to pull when we are up-to-date
+    instance_cache [:file_content, file, sha, pull] do
+      next if !pull && !mirrored?
+      ensure_mirror_current if pull && (!sha.match?(Build::SHA1_REGEX) || !sha_exist?(sha))
+      capture_stdout "git", "show", "#{sha}:#{file}"
     end
-    capture_stdout "git", "show", "#{sha}:#{file}"
   end
 
   def update_mirror
@@ -102,16 +98,21 @@ class GitRepository
 
   # @returns [true, false]
   def ensure_mirror_current
-    return @mirror_current unless @mirror_current.nil?
+    return @mirror_current if mirror_current?
     @mirror_current = update_mirror
+  end
+
+  def mirror_current?
+    !@mirror_current.nil?
   end
 
   # makes sure that only 1 repository is doing mirror/clone at any given time
   # also print to the job output when we are waiting for a lock so user knows to be patient
-  # @returns [block result, false on lock timeout]
+  # @returns block result or false on lock timeout
   def exclusive(timeout: 10.minutes)
+    counter = 0
     log_wait = proc do |owner|
-      if Rails.env.test? || (Time.now.to_i % 10) == 0
+      if (counter += 1) % 10 == 1
         executor.output.write("Waiting for repository lock for #{owner}\n")
       end
     end
@@ -130,17 +131,21 @@ class GitRepository
   end
 
   def clone!
+    @instance_cache.clear
     executor.execute "git -c core.askpass=true clone --mirror #{repository_url} #{repo_cache_dir}"
   end
   add_tracer :clone!
 
   def update!
+    @instance_cache.clear
     executor.execute("cd #{repo_cache_dir}", 'git fetch -p')
   end
   add_tracer :update!
 
   def sha_exist?(sha)
-    !!capture_stdout("git", "cat-file", "-t", sha)
+    instance_cache [:sha_exist?, sha] do
+      !!capture_stdout("git", "cat-file", "-t", sha)
+    end
   end
 
   def checkout(git_reference, work_dir)
@@ -170,6 +175,10 @@ class GitRepository
 
   def mirrored?
     Dir.exist?(repo_cache_dir)
+  end
+
+  def instance_cache(key)
+    @instance_cache.fetch(key) { @instance_cache[key] = yield }
   end
 
   # success: stdout as string

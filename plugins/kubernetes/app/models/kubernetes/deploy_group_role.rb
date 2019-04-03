@@ -8,9 +8,9 @@ module Kubernetes
 
     audited
 
-    belongs_to :project
-    belongs_to :deploy_group
-    belongs_to :kubernetes_role, class_name: 'Kubernetes::Role'
+    belongs_to :project, inverse_of: :kubernetes_roles
+    belongs_to :deploy_group, inverse_of: :kubernetes_deploy_group_roles
+    belongs_to :kubernetes_role, class_name: 'Kubernetes::Role', inverse_of: :kubernetes_deploy_group_roles
 
     validates :requests_cpu, :requests_memory, :limits_memory, :limits_cpu, :replicas, presence: true
     validates :requests_cpu, numericality: {greater_than_or_equal_to: 0}
@@ -25,7 +25,7 @@ module Kubernetes
 
     # The matrix is a list of deploy group and its roles + deploy-group-roles
     def self.matrix(stage)
-      ignored_role_ids = stage.kubernetes_roles.where(ignored: true).pluck(:kubernetes_role_id)
+      ignored_role_ids = stage.kubernetes_stage_roles.where(ignored: true).pluck(:kubernetes_role_id)
       project_dg_roles = Kubernetes::DeployGroupRole.where(
         project_id: stage.project_id,
         deploy_group_id: stage.deploy_groups.map(&:id)

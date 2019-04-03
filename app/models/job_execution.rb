@@ -146,7 +146,7 @@ class JobExecution
       production: stage&.production?
     }
 
-    ActiveSupport::Notifications.instrument("execute_job.samson", payload) do
+    Samson::TimeSum.instrument "execute_job.samson", payload do
       payload[:success] =
         if kubernetes?
           @executor = Kubernetes::DeployExecutor.new(@job, @output)
@@ -155,8 +155,6 @@ class JobExecution
           @executor.execute(*cmds)
         end
     end
-
-    payload[:success]
   end
 
   # ideally the plugin should handle this, but that was even hackier
@@ -212,7 +210,7 @@ class JobExecution
 
   def make_builds_available
     # wait for builds to finish
-    builds = build_finder.ensure_successful_builds
+    builds = build_finder.ensure_succeeded_builds
 
     # pre-download the necessary images in case they are not public
     ImageBuilder.local_docker_login do |login_commands|

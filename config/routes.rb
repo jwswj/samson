@@ -99,6 +99,10 @@ Samson::Application.routes.draw do
     collection do
       get :duplicates
     end
+    member do
+      get :history
+      post :revert
+    end
   end
   resources :secret_sharing_grants, except: [:edit, :update]
 

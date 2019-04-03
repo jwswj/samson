@@ -13,15 +13,28 @@ module Samson
       IMPORTANT_COLUMNS = [:visible, :deprecated_at, :comment, :creator_id, :updater_id].freeze
 
       class << self
-        def read(id)
+        def read(id, *args)
           return unless id
-          result = vault_action(:read, vault_path(id, :encode))
+          result = vault_action(:read, vault_path(id, :encode), *args)
           return if !result || result.data[:vault].nil?
 
           result = result.to_h
           result = result.merge(result.delete(:data))
           result[:value] = result.delete(:vault)
           result
+        end
+
+        # history with full versions
+        # see https://www.vaultproject.io/api/secret/kv/kv-v2.html#read-secret-metadata
+        def history(id, resolve: false)
+          return unless history = vault_action(:read_metadata, vault_path(id, :encode))
+          return history unless resolve
+          history.fetch(:versions).each do |version, metadata|
+            metadata.replace(metadata: metadata.dup)
+            next if metadata.dig(:metadata, :destroyed)
+            metadata.merge!(read(id, version))
+          end
+          history
         end
 
         def read_multi(ids)

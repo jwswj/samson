@@ -142,6 +142,28 @@ describe Samson::Secrets::Manager do
     end
   end
 
+  describe ".history" do
+    it "reads values" do
+      data = Samson::Secrets::Manager.history(secret.id, include_value: true)
+      data.fetch(:versions).values.map { |v| v.fetch(:value) }.must_equal ["v1", "v2", "v2", "v3"]
+    end
+
+    it "reads diff" do
+      data = Samson::Secrets::Manager.history(secret.id)
+      data.fetch(:versions).values.map { |v| v.fetch(:value) }.
+        must_equal ["(changed)", "(changed)", "(unchanged)", "(changed)"]
+    end
+  end
+
+  describe ".revert" do
+    it "reverts a secret to an older version" do
+      Samson::Secrets::Manager.revert(secret.id, to: "v2", user: users(:project_admin))
+      current = Samson::Secrets::Manager.read(secret.id, include_value: true)
+      current[:value].must_equal "MY-SECRET"
+      current[:updater_id].must_equal users(:project_admin).id
+    end
+  end
+
   describe ".move" do
     def move
       Samson::Secrets::Manager.move "global/foo/global/bar", "global/baz/global/bar"

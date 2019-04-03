@@ -62,7 +62,7 @@ describe MassRolloutsController do
         end
 
         it "finds deployed stage" do
-          review_deploy status: "successful"
+          review_deploy status: "succeeded"
           assigns(:stages).size.must_equal 1
         end
       end
@@ -102,7 +102,7 @@ describe MassRolloutsController do
       let(:template_deploy) { deploys(:succeeded_production_test) }
 
       before do
-        # template stage in same env has a successful deploy
+        # template stage in same env has a succeeded deploy
         template_stage.update_column(:is_template, true)
         template_deploy.update_column(:stage_id, template_stage.id)
       end
@@ -120,7 +120,7 @@ describe MassRolloutsController do
         deploy.reference.must_equal template_deploy.reference
       end
 
-      it "re-deploys last successful deploy of the stage" do
+      it "re-deploys last succeeded deploy of the stage" do
         template_deploy.update_column(:stage_id, stage.id)
         assert_difference('Deploy.count', 1) { deploy reference_source: 'redeploy' }
         deploy = stage.deploys.order('created_at desc').first
@@ -482,7 +482,6 @@ describe MassRolloutsController do
           project = Project.create!(
             name: "foo",
             include_new_deploy_groups: true,
-            permalink: "foo",
             repository_url: "https://github.com/samson-test-org/example-project.git"
           )
           Stage.create!(name: "foo tstage", project: project, is_template: true, deploy_groups: [template_deploy_group])

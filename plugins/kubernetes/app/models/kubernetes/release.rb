@@ -3,14 +3,15 @@ module Kubernetes
   class Release < ActiveRecord::Base
     self.table_name = 'kubernetes_releases'
 
-    belongs_to :user
-    belongs_to :project
-    belongs_to :deploy
+    belongs_to :user, inverse_of: nil
+    belongs_to :project, inverse_of: :kubernetes_releases
+    belongs_to :deploy, inverse_of: :kubernetes_release
     has_many :release_docs,
       class_name: 'Kubernetes::ReleaseDoc',
       foreign_key: 'kubernetes_release_id',
-      dependent: :destroy
-    has_many :deploy_groups, through: :release_docs
+      dependent: :destroy,
+      inverse_of: :kubernetes_release
+    has_many :deploy_groups, through: :release_docs, inverse_of: nil
 
     attr_accessor :builds
 
@@ -27,7 +28,7 @@ module Kubernetes
         release = create(params) do |release|
           if roles.flatten(1).any? { |dgr| dgr.kubernetes_role.blue_green? }
             release.blue_green_color = begin
-              release.previous_successful_release&.blue_green_color == "blue" ? "green" : "blue"
+              release.previous_succeeded_release&.blue_green_color == "blue" ? "green" : "blue"
             end
           end
         end
@@ -69,8 +70,8 @@ module Kubernetes
       Rails.application.routes.url_helpers.project_kubernetes_release_url(project, self)
     end
 
-    def previous_successful_release
-      deploy.previous_successful_deploy&.kubernetes_release
+    def previous_succeeded_release
+      deploy.previous_succeeded_deploy&.kubernetes_release
     end
 
     private

@@ -2,7 +2,7 @@
 
 class Stage < ActiveRecord::Base
   AUTOMATED_NAME = 'Automated Deploys'
-  NON_CLONEABLE_ATTRIBUTES = %w[id next_stage_ids prerequisite_stage_ids is_template].freeze
+  NON_CLONEABLE_ATTRIBUTES = %w[id next_stage_ids prerequisite_stage_ids is_template permalink].freeze
 
   has_soft_deletion default_scope: true unless self < SoftDeletion::Core
 
@@ -12,20 +12,21 @@ class Stage < ActiveRecord::Base
 
   audited except: [:order]
 
-  belongs_to :project, touch: true
+  belongs_to :project, touch: true, inverse_of: :stages
 
   has_many :deploys, dependent: :destroy
   has_many :webhooks, dependent: :destroy
   has_many :outbound_webhooks, dependent: :destroy
 
-  belongs_to :template_stage, class_name: "Stage", optional: true
-  has_many :clones, class_name: "Stage", foreign_key: "template_stage_id", dependent: nil
+  belongs_to :template_stage, class_name: "Stage", optional: true, inverse_of: :clones
+  has_many :clones, class_name: "Stage", foreign_key: "template_stage_id", dependent: nil, inverse_of: :template_stage
 
   has_many :stage_commands, autosave: true, dependent: :destroy
+  has_many :commands, through: :stage_commands, inverse_of: :stages
   private :stage_commands, :stage_commands= # must use ordering via script/command_ids/command_ids=
 
   has_many :deploy_groups_stages, dependent: :destroy
-  has_many :deploy_groups, through: :deploy_groups_stages
+  has_many :deploy_groups, through: :deploy_groups_stages, inverse_of: :stages
 
   default_scope { order(:order) }
 
@@ -78,12 +79,12 @@ class Stage < ActiveRecord::Base
     @last_deploy = deploys.first
   end
 
-  def last_successful_deploy
-    return @last_successful_deploy if defined?(@last_successful_deploy)
-    @last_successful_deploy = deploys.successful.first
+  def last_succeeded_deploy
+    return @last_succeeded_deploy if defined?(@last_succeeded_deploy)
+    @last_succeeded_deploy = deploys.succeeded.first
   end
 
-  # last active or successful deploy
+  # last active or succeeded deploy
   def deployed_or_running_deploy
     deploys.joins(:job).where("jobs.status" => Job::ACTIVE_STATUSES + ["succeeded"]).first
   end
@@ -133,7 +134,7 @@ class Stage < ActiveRecord::Base
     # static notification
     emails.concat static_emails_on_automated_deploy_failure.to_s.split(/, ?/)
 
-    # authors of commits after last successful deploy
+    # authors of commits after last succeeded deploy
     if email_committers_on_automated_deploy_failure?
       changeset = deploy.changeset_to(last_deploy)
       emails.concat changeset.commits.map(&:author_email).compact

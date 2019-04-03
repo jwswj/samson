@@ -1,7 +1,13 @@
 # frozen_string_literal: true
 module SamsonEnv
-  HELP_TEXT = "$VAR / ${VAR} replacements supported. Priority is DeployGroup, Environment, All. " \
-    "Secrets can be used with secret://key_of_secret."
+  HELP_TEXT = <<~TEXT.html_safe
+    <ul>
+      <li>$VAR / ${VAR} replacements supported</li>
+      <li>Priority is Deploy, Stage, Project, DeployGroup, Environment, All</li>
+      <li>Secrets can be used with secret://key_of_secret</li>
+      <li>env vars are written to .env{.deploy-group} files and need to be loaded by the app via Dotenv library or <code>set -a;source .env;set +a</code></li>
+    </ul>
+  TEXT
 
   class Engine < Rails::Engine
   end
@@ -76,7 +82,6 @@ Samson::Hooks.callback :deploy_group_env do |*args|
   EnvironmentVariable.env(*args)
 end
 
-# TODO: make a edit page and link to that
 Samson::Hooks.callback(:link_parts_for_resource) do
   [
     "EnvironmentVariable",
@@ -85,6 +90,12 @@ Samson::Hooks.callback(:link_parts_for_resource) do
       parent = " on #{env.parent.name}" if env.parent
       ["#{env.name}#{scope}#{parent}", EnvironmentVariable]
     end
+  ]
+end
+Samson::Hooks.callback(:link_parts_for_resource) do
+  [
+    "EnvironmentVariableGroup",
+    ->(env_group) { [env_group.name, env_group] }
   ]
 end
 

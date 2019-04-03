@@ -47,6 +47,16 @@ class SecretsController < ApplicationController
       sort_by { |_, v| -v.size }
   end
 
+  def history
+    @history = Samson::Secrets::Manager.history(id, resolve: true)
+  end
+
+  def revert
+    version = params.require(:version)
+    Samson::Secrets::Manager.revert(id, to: version, user: current_user)
+    redirect_to secret_path(id), notice: "Reverted to #{version}!"
+  end
+
   def new
     render :show
   end
@@ -177,6 +187,6 @@ class SecretsController < ApplicationController
   # @override CurrentUser since we need to allow any user to see new since we do not yet
   # know what project they want to create for
   def resource_action
-    ["new", "duplicates"].include?(action_name) ? :read : super
+    ["new", "duplicates", "history"].include?(action_name) ? :read : super
   end
 end

@@ -156,12 +156,8 @@ module Kubernetes
       end
     end
 
-    def keep_name?
-      template.dig(:metadata, :annotations, :'samson/keep_name') == 'true'
-    end
-
     def set_service_name
-      return if keep_name?
+      return if Kubernetes::RoleValidator.keep_name?(template)
       template[:metadata][:name] = generate_service_name(template[:metadata][:name])
     end
 
@@ -339,7 +335,7 @@ module Kubernetes
     end
 
     def set_name
-      name = if keep_name?
+      name = if Kubernetes::RoleValidator.keep_name?(template)
         template.dig_fetch(:metadata, :name)
       else
         @doc.kubernetes_role.resource_name
@@ -466,8 +462,7 @@ module Kubernetes
         end
 
         # name of the cluster
-        kube_cluster_name = DeployGroup.find(metadata[:deploy_group_id]).kubernetes_cluster.name.to_s
-        env[:KUBERNETES_CLUSTER_NAME] = kube_cluster_name
+        env[:KUBERNETES_CLUSTER_NAME] = @doc.deploy_group.kubernetes_cluster.name.to_s
 
         # blue-green phase
         env[:BLUE_GREEN] = blue_green_color if blue_green_color
