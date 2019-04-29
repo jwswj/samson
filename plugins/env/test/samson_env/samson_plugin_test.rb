@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require_relative '../test_helper'
 
-SingleCov.covered! uncovered: 3
+SingleCov.covered!
 
 describe SamsonEnv do
   let(:deploy) { deploys(:succeeded_test) }
@@ -35,31 +35,37 @@ describe SamsonEnv do
       project.environment_variables.create!(name: "WORLD", value: "hello")
     end
 
-    describe ".env" do
-      describe "without groups" do
-        before { stage.deploy_groups.delete_all }
+    it "writes group .env files" do
+      fire
+      Dir[".env*"].sort.must_equal [".env.pod-100"]
+      File.read(".env.pod-100").must_equal "HELLO=\"world\"\nWORLD=\"hello\"\n"
+    end
 
-        it "does not modify when no variables were specified" do
-          EnvironmentVariable.delete_all
-          project.environment_variables.reload
-          fire
-          File.exist?(".env").must_equal false
-        end
+    it "removes base .env  file if it exists" do # not sure why we do this
+      File.write(".env", "X")
+      fire
+      refute File.exist?(".env")
+    end
 
-        it "writes to .env" do
-          fire
-          File.read(".env").must_equal "HELLO=\"world\"\nWORLD=\"hello\"\n"
-          ("%o" % File.stat(".env").mode).must_equal "100640"
-        end
+    it "does not fail when executing job without deploy" do
+      stubs(:deploy).returns(nil)
+      fire
+    end
+
+    describe "without deploy groups" do
+      before { stage.deploy_groups.delete_all }
+
+      it "does not modify when no variables were specified" do
+        EnvironmentVariable.delete_all
+        project.environment_variables.reload
+        fire
+        File.exist?(".env").must_equal false
       end
 
-      describe "with deploy groups" do
-        it "deletes the base file" do
-          fire
-
-          File.read(".env.pod-100").must_equal "HELLO=\"world\"\nWORLD=\"hello\"\n"
-          refute File.exist?(".env")
-        end
+      it "writes to .env" do
+        fire
+        File.read(".env").must_equal "HELLO=\"world\"\nWORLD=\"hello\"\n"
+        ("%o" % File.stat(".env").mode).must_equal "100640"
       end
     end
   end
@@ -83,25 +89,58 @@ describe SamsonEnv do
     end
   end
 
-  describe :deploy_group_env do
+  describe :deploy_execution_env do
+    let(:deploy) { deploys(:succeeded_test) }
+
+    only_callbacks_for_plugin :deploy_execution_env
+
+    it "adds for stages" do
+      deploy.stage.environment_variables.create!(name: "WORLD", value: "hello")
+      Samson::Hooks.fire(:deploy_execution_env, deploy).must_equal [{"WORLD" => "hello"}]
+    end
+  end
+
+  describe :deploy_env do
+    let(:deploy) { deploys(:succeeded_test) }
+
+    only_callbacks_for_plugin :deploy_env
+
     it "adds env variables" do
       deploy_group = deploy_groups(:pod1)
       project.environment_variables.create!(name: "WORLD1", value: "hello", scope: environments(:staging))
       project.environment_variables.create!(name: "WORLD2", value: "hello", scope: deploy_group)
       project.environment_variables.create!(name: "WORLD3", value: "hello")
-      all = Samson::Hooks.fire(:deploy_group_env, project, deploy_group).inject({}, :merge!)
+      all = Samson::Hooks.fire(:deploy_env, Deploy.new(project: project), deploy_group).inject({}, :merge!)
 
       refute all["WORLD1"]
       all["WORLD2"].must_equal "hello"
       all["WORLD3"].must_equal "hello"
     end
+
+    it "is empty" do
+      Samson::Hooks.fire(:deploy_env, deploy, deploy_groups(:pod1)).must_equal [{}]
+    end
+
+    it "adds stage env variables" do
+      deploy.stage.environment_variables.build(name: "Foo", value: "bar")
+      Samson::Hooks.fire(:deploy_env, deploy, deploy_groups(:pod1)).must_equal [{"Foo" => "bar"}]
+    end
+
+    it "adds deploy env variables" do
+      deploy.environment_variables.build(name: "Foo", value: "bar")
+      Samson::Hooks.fire(:deploy_env, deploy, deploy_groups(:pod1)).must_equal [{"Foo" => "bar"}]
+    end
   end
 
   describe :link_parts_for_resource do
+    def fire(var)
+      proc = Samson::Hooks.fire(:link_parts_for_resource).to_h.fetch(var.class.name)
+      proc.call(var)
+    end
+
     it "links to env var" do
       var = project.environment_variables.create!(name: "WORLD3", value: "hello")
-      proc = Samson::Hooks.fire(:link_parts_for_resource).to_h.fetch("EnvironmentVariable")
-      proc.call(var).must_equal ["WORLD3 on Foo", EnvironmentVariable]
+      fire(var).must_equal ["WORLD3 on Foo", EnvironmentVariable]
     end
 
     it "links to scoped env var" do
@@ -111,14 +150,18 @@ describe SamsonEnv do
         value: "hello",
         scope_type_and_id: "Environment-#{environments(:production).id}"
       )
-      proc = Samson::Hooks.fire(:link_parts_for_resource).to_h.fetch("EnvironmentVariable")
-      proc.call(var).must_equal ["WORLD3 for Production on Bar", EnvironmentVariable]
+      fire(var).must_equal ["WORLD3 for Production on Bar", EnvironmentVariable]
     end
 
     it "links to env var group" do
       group = EnvironmentVariableGroup.create!(name: "FOO")
-      proc = Samson::Hooks.fire(:link_parts_for_resource).to_h.fetch("EnvironmentVariableGroup")
-      proc.call(group).must_equal ["FOO", group]
+      fire(group).must_equal ["FOO", group]
+    end
+
+    it "does not crash with deleted parent" do
+      var = project.environment_variables.create!(name: "WORLD3", value: "hello")
+      var.reload.parent_id = 123
+      fire(var).must_equal ["WORLD3 on Deleted", EnvironmentVariable]
     end
   end
 
@@ -210,26 +253,6 @@ describe SamsonEnv do
         view.wont_include checkbox
         view.wont_include repo_link
       end
-    end
-  end
-
-  describe :deploy_env do
-    let(:deploy) { deploys(:succeeded_test) }
-
-    around { |t| Samson::Hooks.only_callbacks_for_plugin("env", :deploy_env, &t) }
-
-    it "is empty" do
-      Samson::Hooks.fire(:deploy_env, deploy).must_equal [{}, {}]
-    end
-
-    it "adds stage env variables" do
-      deploy.stage.environment_variables.build(name: "Foo", value: "bar")
-      Samson::Hooks.fire(:deploy_env, deploy).must_equal [{"Foo" => "bar"}, {}]
-    end
-
-    it "adds deploy env variables" do
-      deploy.environment_variables.build(name: "Foo", value: "bar")
-      Samson::Hooks.fire(:deploy_env, deploy).must_equal [{}, {"Foo" => "bar"}]
     end
   end
 

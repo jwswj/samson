@@ -31,6 +31,10 @@ describe Samson::FormBuilder do
       builder.input(:name, label: "Ho Ho").must_include 'for="user_name">Ho Ho</label>'
     end
 
+    it "can handle a blank label" do
+      builder.input(:name, label: '').must_include '<div class="col-lg-2 control-label"></div>'
+    end
+
     it "can change field type" do
       builder.input(:name, as: :text_area).must_include '<textarea '
     end
@@ -134,6 +138,11 @@ describe Samson::FormBuilder do
     it "can include custom delete link" do
       template.expects(:url_for).with([:admin, commands(:echo)]).returns('/xxx')
       builder.actions(delete: [:admin, commands(:echo)]).must_include "Delete"
+    end
+
+    it "can include type_to_delete link" do
+      template.expects(:url_for).with(builder.object).returns('/xxx')
+      builder.actions(delete: :type).must_include "type-to-delete"
     end
 
     it "does not include history link for new object" do

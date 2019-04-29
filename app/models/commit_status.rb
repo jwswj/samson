@@ -58,8 +58,8 @@ class CommitStatus
     static = @reference.match?(Build::SHA1_REGEX) || @reference.match?(Release::VERSION_REGEX)
     expires_in = ->(reply) { cache_duration(reply) }
     Samson::DynamicTtlCache.cache_fetch_if static, cache_key(@reference), expires_in: expires_in do
-      checks_result = with_octokit_client_error_rescue { github_check }
-      status_result = with_octokit_client_error_rescue { github_status }
+      checks_result = octokit_error_as_status('checks') { github_check }
+      status_result = octokit_error_as_status('status') { github_status }
 
       results_with_statuses = [checks_result, status_result].select { |result| result[:statuses].any? }
 
@@ -74,8 +74,8 @@ class CommitStatus
     base_url = "repos/#{@project.repository_path}/commits/#{@reference}"
     preview_header = {Accept: 'application/vnd.github.antiope-preview+json'}
 
-    check_suites = GITHUB.get("#{base_url}/check-suites", headers: preview_header)[:check_suites]
-    checks = GITHUB.get("#{base_url}/check-runs", headers: preview_header)
+    check_suites = GITHUB.get("#{base_url}/check-suites", headers: preview_header).to_attrs.fetch(:check_suites)
+    checks = GITHUB.get("#{base_url}/check-runs", headers: preview_header).to_attrs
 
     overall_state = check_suites.
       map { |suite| check_state_equivalent(suite[:conclusion]) }.
@@ -91,7 +91,30 @@ class CommitStatus
       }
     end
 
+    statuses += pending_check_statuses(check_suites, checks)
+
     {state: overall_state || 'pending', statuses: statuses}
+  end
+
+  def pending_check_statuses(check_suites, checks)
+    reported = checks[:check_runs].map { |c| c.dig_fetch(:check_suite, :id) }
+    pending_suites = check_suites.reject { |s| reported.include?(s.fetch(:id)) }
+    pending_suites.map do |suite|
+      name = suite.dig_fetch(:app, :name)
+      {
+        state: "pending",
+        description: "Check #{name.inspect} has not reported yet",
+        context: name,
+        target_url: github_pr_checks_url(suite),
+        updated_at: Time.now
+      }
+    end
+  end
+
+  # convert github api url to html url without doing another request for the PR
+  def github_pr_checks_url(suite)
+    return unless pr = suite.fetch(:pull_requests).first
+    pr.dig(:url).sub('://api.', '://').sub('/repos/', '/').sub('/pulls/', '/pull/') + "/checks"
   end
 
   def github_status
@@ -184,21 +207,16 @@ class CommitStatus
     @deploy_scope ||= Deploy.reorder(nil).succeeded.where(stage_id: @stage.influencing_stage_ids).group(:stage_id)
   end
 
-  def with_octokit_client_error_rescue
+  def octokit_error_as_status(type)
     yield
-  rescue Octokit::ClientError
-    generate_error_status_and_report($!)
-  end
-
-  def generate_error_status_and_report(exception)
-    error_url = ErrorNotifier.notify(exception, sync: true)
+  rescue Octokit::ClientError => e
+    Rails.logger.error(e) # log error for further debugging if it's not 404.
     {
       state: "missing",
       statuses: [{
         context: "Reference", # for releases/show.html.erb
         state: "missing",
-        description: "There was a problem getting the status for reference '#{@reference}'." \
-                       " See #{error_url} for details",
+        description: "Unable to get commit #{type}.",
         updated_at: Time.now # needed for #cache_duration
       }]
     }

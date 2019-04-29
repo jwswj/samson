@@ -8,7 +8,7 @@ describe SamsonRollbar do
   describe 'error callback' do
     let(:exception) { mock('exception') }
 
-    around { |t| Samson::Hooks.only_callbacks_for_plugin('rollbar', :error, &t) }
+    only_callbacks_for_plugin :error
 
     it 'reports error' do
       Rollbar.expects(:error).with(exception, foo: 'bar').returns(123)
@@ -24,7 +24,7 @@ describe SamsonRollbar do
       end
 
       it "ignores disabled reporter, so other reporters can show their url" do
-        # the [nil] means that what other reporters send is shown to the user, see ErrorNotifier#notify
+        # the [nil] means that what other reporters send is shown to the user, see Samson::ErrorNotifier#notify
         Samson::Hooks.fire(:error, exception, foo: 'bar', sync: true).must_equal [nil]
       end
     end

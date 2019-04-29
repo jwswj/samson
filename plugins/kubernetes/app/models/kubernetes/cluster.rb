@@ -26,7 +26,7 @@ module Kubernetes
     before_destroy :ensure_unused
 
     def client(type)
-      (@client ||= {})[type] ||= begin
+      (@client ||= {})[[Thread.current.object_id, type]] ||= begin
         case auth_method
         when "context"
           context = kubeconfig.context(config_context)
@@ -82,15 +82,6 @@ module Kubernetes
         end
       end
       Gem::Version.new(version)
-    end
-
-    def as_json(**options)
-      ignored = [
-        :encrypted_client_cert, :encrypted_client_cert_iv, :client_cert,
-        :encrypted_client_key, :encrypted_client_key_iv, :client_key,
-        :encryption_key_sha
-      ]
-      super(except: ignored, **options)
     end
 
     private

@@ -36,7 +36,12 @@ module Samson
           end
         else
           input_html[:class] ||= "form-control"
-          content = label(attribute, label, class: "col-lg-2 control-label")
+          content = if label.present?
+            label(attribute, label, class: 'col-lg-2 control-label')
+          else
+            # Spacer with no label, useful for subfields or fields that are already under a different header
+            content_tag(:div, '', class: 'col-lg-2 control-label')
+          end
           content << content_tag(:div, class: 'col-lg-4', &block)
           content << help
         end
@@ -47,9 +52,9 @@ module Samson
       content_tag :div, class: "form-group" do
         content_tag :div, class: "col-lg-offset-2 col-lg-10" do
           content = submit label, class: "btn btn-primary"
-          resource = (delete.is_a?(Array) ? delete : object)
+          resource = (delete.is_a?(Array) ? delete : object) # TODO: remove array support
           if object.persisted?
-            content << SPACER << @template.link_to_delete(resource) if delete
+            content << SPACER << @template.link_to_delete(resource, type_to_delete: (delete == :type)) if delete
             content << (delete ? SEPARATOR : SPACER) << @template.link_to_history(resource) if history
           end
           content << @template.capture(&block) if block
