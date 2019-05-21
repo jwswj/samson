@@ -5,6 +5,12 @@ require "kubeclient"
 SingleCov.covered!
 
 describe SamsonKubernetes do
+  describe :project_permitted_params do
+    it "adds ours" do
+      Samson::Hooks.fire(:project_permitted_params).flatten(1).must_include :kubernetes_rollout_timeout
+    end
+  end
+
   describe :stage_permitted_params do
     it "adds ours" do
       Samson::Hooks.fire(:stage_permitted_params).flatten(1).must_include :kubernetes
@@ -49,6 +55,11 @@ describe SamsonKubernetes do
     it "links to cluster" do
       cluster = kubernetes_clusters(:test_cluster)
       link_parts(cluster).must_equal ["test", cluster]
+    end
+
+    it "links to namespace" do
+      namespace = kubernetes_namespaces(:test)
+      link_parts(namespace).must_equal ["test", namespace]
     end
   end
 

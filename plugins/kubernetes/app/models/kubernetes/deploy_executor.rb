@@ -8,8 +8,8 @@ module Kubernetes
     if ENV['KUBE_WAIT_FOR_LIVE'] && !ENV["KUBERNETES_WAIT_FOR_LIVE"]
       raise "Use KUBERNETES_WAIT_FOR_LIVE with seconds instead of KUBE_WAIT_FOR_LIVE" # uncovered
     end
-    WAIT_FOR_LIVE = Integer(ENV.fetch('KUBERNETES_WAIT_FOR_LIVE', '600'))
-    WAIT_FOR_PREREQUISITES = Integer(ENV.fetch('KUBERNETES_WAIT_FOR_PREREQUISITES', WAIT_FOR_LIVE))
+    DEFAULT_ROLLOUT_TIMEOUT = Integer(ENV.fetch('KUBERNETES_WAIT_FOR_LIVE', '600'))
+    WAIT_FOR_PREREQUISITES = Integer(ENV.fetch('KUBERNETES_WAIT_FOR_PREREQUISITES', DEFAULT_ROLLOUT_TIMEOUT))
     STABILITY_CHECK_DURATION = Integer(ENV.fetch('KUBERNETES_STABILITY_CHECK_DURATION', 1.minute))
     TICK = Integer(ENV.fetch('KUBERNETES_STABILITY_CHECK_TICK', 10.seconds))
     RESTARTED = "Restarted"
@@ -44,7 +44,8 @@ module Kubernetes
       end
 
       if deploys.any?
-        return false unless deploy_and_watch(deploys, timeout: WAIT_FOR_LIVE)
+        timeout = @job.project.kubernetes_rollout_timeout || DEFAULT_ROLLOUT_TIMEOUT
+        return false unless deploy_and_watch(deploys, timeout: timeout)
       end
 
       true
@@ -71,16 +72,13 @@ module Kubernetes
       loop do
         statuses = resource_statuses(release_docs)
         interesting = statuses.select { |s| s.kind == "Pod" || !s.live } # ignore boring things that rarely fail
-        if interesting.none?
-          @output.puts "No pods were created"
-          return success, statuses
-        end
-
-        ready_statuses, not_ready_statuses = statuses.partition(&:live)
+        ready_statuses, not_ready_statuses = interesting.partition(&:live)
+        failure = too_many_not_ready?(interesting)
 
         if waiting_for_ready
-          print_statuses("Deploy status:", interesting, exact: false)
-          if too_many_not_ready?(statuses)
+          print_statuses("Deploy status:", interesting, exact: false) if interesting.any?
+
+          if failure
             if stopped = not_ready_statuses.select(&:finished).presence
               print_statuses("UNSTABLE, resources failed:", stopped, exact: true)
               return false, statuses
@@ -96,7 +94,7 @@ module Kubernetes
             wait_start_time = Time.now.to_i
           end
         else
-          if too_many_not_ready?(statuses)
+          if failure
             print_statuses("UNSTABLE, resources not ready:", not_ready_statuses, exact: true)
             return false, statuses
           else
