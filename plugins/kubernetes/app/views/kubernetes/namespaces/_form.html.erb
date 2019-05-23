@@ -8,11 +8,15 @@
       <%= form.input :name, required: true, pattern: Kubernetes::Namespace::NAME_PATTERN, input_html: {disabled: form.object.persisted?} %>
       <%= form.input :comment, as: :text_area %>
 
-      <%= form.input :project_ids, label: 'Projects' do %>
+      <%= form.input :project_ids, label: 'Projects', help: "Adding a projects will remove it's kubernetes roles resource and service names AND move it from it's current namespace" do %>
         <%= form.select :project_ids, Project.pluck(:name, :id), {}, multiple: true, **Samson::FormBuilder::LIVE_SELECT_OPTIONS %>
       <% end %>
     </fieldset>
 
-    <%= form.actions delete: true, history: true, delete_help: "Does not delete the namespace from the clusters." %>
+    <%= form.actions delete: true, history: true, delete_help: "Does not delete the namespace from the clusters." do %>
+      <% if @kubernetes_namespace.persisted? %>
+        <%= link_to "Sync", sync_kubernetes_namespace_path(@kubernetes_namespace), class: "btn btn-default", data: {method: :post} %>
+      <% end %>
+    <% end %>
   <% end %>
 </section>
