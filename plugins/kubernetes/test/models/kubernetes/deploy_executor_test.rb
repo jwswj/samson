@@ -24,20 +24,6 @@ describe Kubernetes::DeployExecutor do
     deploy.update_column :kubernetes, true
   end
 
-  describe "#pid" do
-    it "returns a fake pid" do
-      Kubernetes::DeployExecutor.any_instance.stubs(:build_selectors).returns([])
-      executor.pid.must_include "Kubernetes"
-    end
-  end
-
-  describe "#pgid" do
-    it "returns a fake pid" do
-      Kubernetes::DeployExecutor.any_instance.stubs(:build_selectors).returns([])
-      executor.pgid.must_include "Kubernetes"
-    end
-  end
-
   describe "#execute" do
     def execute
       stub_request(:get, %r{http://foobar.server/api/v1/namespaces/staging/pods\?}).
@@ -151,6 +137,7 @@ describe Kubernetes::DeployExecutor do
     end
 
     it "can deploy roles with 0 replicas to disable them" do
+      pod_reply[:items].shift # remove the worker pod
       worker_role.update_column(:replicas, 0)
       assert execute, out
       out.wont_include "resque-worker Pod: Live\n"
@@ -195,7 +182,7 @@ describe Kubernetes::DeployExecutor do
           pod_reply[:items] << copy
         end
 
-        assert_nplus1_queries(1) do
+        assert_nplus1_queries 0 do
           assert execute, out
         end
       end
@@ -563,18 +550,16 @@ describe Kubernetes::DeployExecutor do
     describe "an autoscaled role" do
       before do
         worker_role.kubernetes_role.update_column(:autoscaled, true)
-        worker_role.update_column(:replicas, 2)
       end
 
-      it "only requires one pod to go live when a role is autoscaled" do
-        pod_reply[:items] << pod_reply[:items].first.deep_dup
+      it "only requires min pods to go live when a role is autoscaled" do
+        pod_reply[:items] << pod_reply[:items].first.deep_dup # 2 pods exist because the deployment is autoscaled
 
         worker_is_unstable
 
         assert execute, out
 
         out.scan(/resque-worker Pod: Live/).count.must_equal 1, out
-        out.must_include "(autoscaled role, only showing one pod)"
         out.must_include "SUCCESS"
       end
 
@@ -589,7 +574,6 @@ describe Kubernetes::DeployExecutor do
 
         out.scan(/resque-worker Pod: Restarted/).count.must_equal 1, out
         out.scan(/resque-worker Pod pod-resque-worker: Restarted/).count.must_equal 1, out
-        out.must_include "(autoscaled role, only showing one pod)"
         out.must_include "DONE"
       end
 
@@ -805,17 +789,20 @@ describe Kubernetes::DeployExecutor do
   end
 
   describe "#fetch_pods" do
+    let(:retries) { SamsonKubernetes::API_RETRIES }
+
     before do
       Kubernetes::DeployExecutor.any_instance.stubs(:build_selectors).returns([])
     end
+
     it "retries on failure" do
-      Kubeclient::Client.any_instance.expects(:get_pods).times(4).raises(Kubeclient::HttpError.new(1, 2, 3))
+      Kubeclient::Client.any_instance.expects(:get_pods).times(retries + 1).raises(Kubeclient::HttpError.new(1, 2, 3))
       executor.instance_variable_set(:@release, kubernetes_releases(:test_release))
       assert_raises(Kubeclient::HttpError) { executor.send(:fetch_pods) }
     end
 
     it "retries on ssl failure" do
-      Kubeclient::Client.any_instance.expects(:get_pods).times(4).raises(OpenSSL::SSL::SSLError.new)
+      Kubeclient::Client.any_instance.expects(:get_pods).times(retries + 1).raises(OpenSSL::SSL::SSLError.new)
       executor.instance_variable_set(:@release, kubernetes_releases(:test_release))
       assert_raises(OpenSSL::SSL::SSLError) { executor.send(:fetch_pods) }
     end

@@ -43,12 +43,18 @@ module Kubernetes
     end
 
     def resources
-      @resources ||= resource_template.map do |t|
-        Kubernetes::Resource.build(
-          t, deploy_group,
-          autoscaled: kubernetes_role.autoscaled,
-          delete_resource: delete_resource
-        )
+      @resources ||= begin
+        resources = resource_template.map do |t|
+          Kubernetes::Resource.build(
+            t, deploy_group,
+            autoscaled: kubernetes_role.autoscaled,
+            delete_resource: delete_resource
+          )
+        end
+        resources.sort_by do |r|
+          Kubernetes::RoleConfigFile::DEPLOY_SORT_ORDER.index(r.kind) ||
+            Kubernetes::RoleConfigFile::DEPLOY_SORT_ORDER.size # default to maximum value
+        end
       end
     end
 
@@ -92,20 +98,17 @@ module Kubernetes
       return unless deployment = raw_template.detect { |r| ["Deployment", "StatefulSet"].include? r[:kind] }
       return unless target = disruption_budget_target(deployment)
 
-      name =
-        if kubernetes_release.project.override_resource_names?
-          kubernetes_role.resource_name
-        else
-          deployment.dig(:metadata, :name)
-        end
-      annotations = (deployment.dig(:metadata, :annotations) || {}).dup
+      annotations = (deployment.dig(:metadata, :annotations) || {}).slice(
+        :"samson/override_project_label",
+        :"samson/keep_name"
+      )
       annotations[:"samson/updateTimestamp"] = Time.now.utc.iso8601
 
       budget = {
         apiVersion: "policy/v1beta1",
         kind: "PodDisruptionBudget",
         metadata: {
-          name: name,
+          name: deployment.dig(:metadata, :name),
           labels: deployment.dig_fetch(:metadata, :labels).dup,
           annotations: annotations
         },

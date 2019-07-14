@@ -420,11 +420,6 @@ describe Kubernetes::TemplateFiller do
           )
         end
 
-        it "overrides Always imagePullPolicy since it does not make sense and slows us down" do
-          add_init_container imagePullPolicy: 'Always', name: 'foo'
-          init_containers[0]["imagePullPolicy"].must_equal "IfNotPresent"
-        end
-
         describe "when project does not build images" do
           before do
             project.docker_image_building_disabled = true
@@ -439,6 +434,37 @@ describe Kubernetes::TemplateFiller do
             build.update_column(:image_name, 'nope')
             e = assert_raises(Samson::Hooks::UserError) { container.fetch(:image).must_equal image }
             e.message.must_include "Did not find build for image_name \"truth_service\""
+          end
+        end
+
+        describe "when using hardcoded image" do
+          before do
+            raw_template[:spec][:template][:spec][:containers][0][:'samson/dockerfile'] = 'none'
+            raw_template[:spec][:template][:spec][:containers][0][:image] = 'foo'
+          end
+
+          it "calls vulnerability scanner for digests" do
+            image = "foo.com/example/bar@sha256:#{"a" * 64}"
+            raw_template[:spec][:template][:spec][:containers][0][:image] = image
+            SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities).
+              with(anything, image)
+            result
+          end
+
+          it "calls vulnerability scanner for resolved tags" do
+            Samson::Hooks.with_callback(:resolve_docker_image_tag, ->(*) { "resolved-digest" }) do
+              SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities).
+                with(anything, "resolved-digest")
+              result
+            end
+          end
+
+          it "does not modify image when resolve fails" do
+            Samson::Hooks.with_callback(:resolve_docker_image_tag, ->(*) { nil }) do
+              SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities).
+                with(anything, "foo")
+              result
+            end
           end
         end
       end
@@ -845,11 +871,14 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "matches the resource name" do
+        template.to_hash.dig_fetch(:metadata, :name).must_equal("test-app-server")
         template.to_hash.dig_fetch(:spec, :scaleTargetRef, :name).must_equal("test-app-server")
       end
 
-      it "sets the name" do
-        template.to_hash.dig_fetch(:metadata, :name).must_equal("test-app-server")
+      it "does not change names when using namespaces" do
+        project.create_kubernetes_namespace!(name: "bar")
+        template.to_hash.dig_fetch(:metadata, :name).must_equal("some-project-rc")
+        template.to_hash.dig_fetch(:spec, :scaleTargetRef).must_equal({})
       end
     end
 
@@ -915,6 +944,13 @@ describe Kubernetes::TemplateFiller do
         template.to_hash[:spec][:foo].must_equal "bar"
       end
 
+      it "supports yaml for long names above 64 chars limit" do
+        raw_template[:metadata][:annotations] = {
+          "samson/set_via_env_json": "spec.foo: FOO"
+        }
+        template.to_hash[:spec][:foo].must_equal "bar"
+      end
+
       it "sets podless roles" do
         raw_template[:spec] = {}
         template.to_hash[:spec][:foo].must_equal "bar"
@@ -947,7 +983,7 @@ describe Kubernetes::TemplateFiller do
         }
         e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
         e.message.must_equal(
-          "Unable to set key samson/set_via_env_json-foo.bar.foo: KeyError key not found: [:foo, :bar]"
+          "Unable to set path foo.bar.foo for Deployment in role app-server: KeyError key not found: [:foo, :bar]"
         )
       end
 
@@ -955,14 +991,36 @@ describe Kubernetes::TemplateFiller do
         environment.update_column(:value, 'foo')
         e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
         e.message.must_equal(
-          "Unable to set key samson/set_via_env_json-spec.foo: JSON::ParserError 765: unexpected token at 'foo'"
+          "Unable to set path spec.foo for Deployment in role app-server: " \
+          "JSON::ParserError 765: unexpected token at 'foo'"
         )
       end
 
       it "fails nicely with env is missing" do
         environment.update_column(:name, 'BAR')
         e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
-        e.message.must_equal "Unable to set key samson/set_via_env_json-spec.foo: KeyError key not found: \"FOO\""
+        e.message.must_equal(
+          "Unable to set path spec.foo for Deployment in role app-server: KeyError key not found: \"FOO\""
+        )
+      end
+    end
+
+    describe "set_kritis_breakglass" do
+      it "does not add by default" do
+        template.to_hash[:metadata][:labels].keys.must_equal [:project, :role]
+      end
+
+      describe "when requested" do
+        before { doc.deploy_group.kubernetes_cluster.update_column(:kritis_breakglass, true) }
+
+        it "adds when requested" do
+          template.to_hash[:metadata][:labels].keys.must_equal [:project, :role, :"kritis.grafeas.io/tutorial"]
+        end
+
+        it "does not add to non-runnables" do
+          raw_template[:kind] = "Service"
+          template.to_hash[:metadata][:labels].keys.must_equal [:project, :role]
+        end
       end
     end
   end
@@ -1048,13 +1106,6 @@ describe Kubernetes::TemplateFiller do
     it "returns empty when resource has no containers" do
       raw_template.delete :spec
       template.build_selectors.must_equal []
-    end
-
-    it "calls vulnerability scanner for hardcoded images" do
-      raw_template[:spec][:template][:spec][:containers][0][:'samson/dockerfile'] = 'none'
-      raw_template[:spec][:template][:spec][:containers][0][:image] = 'foo.com/example/bar'
-      SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities)
-      template.build_selectors
     end
 
     describe "when user selected to not enforce docker images" do

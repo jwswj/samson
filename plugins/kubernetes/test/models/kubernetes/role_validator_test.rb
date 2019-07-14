@@ -428,6 +428,14 @@ describe Kubernetes::RoleValidator do
         errors.must_equal nil
       end
 
+      it "allows good containers" do
+        role[0][:spec][:containers] << {
+          name: "foo",
+          resources: {requests: {cpu: "1m", memory: "1M"}, limits: {cpu: "1m", memory: "1M"}}
+        }
+        errors.must_equal nil
+      end
+
       it "fails without containers" do
         role[0][:spec][:containers].clear
         errors.must_equal ["All templates need spec.containers"]
@@ -440,7 +448,31 @@ describe Kubernetes::RoleValidator do
 
       it "fails without init container name" do
         role[0][:spec][:initContainers] = [{}]
-        errors.must_equal ["Containers need a name"]
+        errors.first.must_equal "Containers need a name"
+      end
+
+      it "fails with missing requests" do
+        role[0][:spec][:initContainers] = [{name: "foo"}]
+        errors.must_equal [
+          "Container foo is missing resources.requests.cpu",
+          "Container foo is missing resources.requests.memory",
+          "Container foo is missing resources.limits.cpu",
+          "Container foo is missing resources.limits.memory"
+        ]
+      end
+
+      it "allows missing resources on first container because it will be filled by samson" do
+        role[0][:spec][:containers].delete :resources
+      end
+
+      it "fails with missing resources on second container" do
+        role[0][:spec][:containers] << {name: "foo"}
+        errors.must_equal [
+          "Container foo is missing resources.requests.cpu",
+          "Container foo is missing resources.requests.memory",
+          "Container foo is missing resources.limits.cpu",
+          "Container foo is missing resources.limits.memory"
+        ]
       end
     end
 
@@ -509,6 +541,14 @@ describe Kubernetes::RoleValidator do
         role.last[:spec][:selector][:project] = 'other'
         errors.must_include error_message
       end
+
+      it "reports deployments without selector, which would default to all labels (like team)" do
+        role.first[:spec].delete :selector
+        errors.must_equal [
+          "Missing project or role for Deployment spec.selector.matchLabels",
+          error_message
+        ]
+      end
     end
 
     describe "#validate_host_volume_paths" do
@@ -542,6 +582,26 @@ describe Kubernetes::RoleValidator do
       it "reports bad matchLabels" do
         role.first[:spec][:selector][:matchLabels][:team] = 'foo'
         errors.must_equal ["Team names change, do not select or match on them"]
+      end
+    end
+
+    describe "#validate_load_balancer" do
+      before { role[1][:metadata][:namespace] = "foo" }
+
+      it "allows when not configured" do
+        errors.must_be_nil
+      end
+
+      it "allows when namespace is allowed" do
+        with_env KUBERNETES_ALLOWED_LOAD_BALANCER_NAMESPACES: "foo" do
+          errors.must_be_nil
+        end
+      end
+
+      it "does not allow when namespace is not allowed" do
+        with_env KUBERNETES_ALLOWED_LOAD_BALANCER_NAMESPACES: "bar" do
+          errors.must_equal ["LoadBalancer is not allowed in foo namespace"]
+        end
       end
     end
   end

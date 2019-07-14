@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema.define(version: 2019_05_14_231932) do
+ActiveRecord::Schema.define(version: 2019_06_27_211709) do
 
   create_table "audits" do |t|
     t.integer "auditable_id", null: false
@@ -72,6 +72,17 @@ ActiveRecord::Schema.define(version: 2019_05_14_231932) do
     t.datetime "updated_at", null: false
     t.string "filters", default: "{}", null: false
     t.string "status", default: "pending", null: false
+  end
+
+  create_table "datadog_monitor_queries" do |t|
+    t.string "query", null: false
+    t.string "match_target"
+    t.string "match_source"
+    t.string "failure_behavior"
+    t.integer "check_duration"
+    t.integer "scope_id", null: false
+    t.string "scope_type", null: false
+    t.index ["scope_id", "scope_type"], name: "index_datadog_monitor_queries_on_scope_id_and_scope_type", length: { scope_type: 100 }
   end
 
   create_table "deploy_groups", id: :integer do |t|
@@ -218,6 +229,7 @@ ActiveRecord::Schema.define(version: 2019_05_14_231932) do
     t.string "encrypted_client_key_iv"
     t.string "encryption_key_sha"
     t.boolean "verify_ssl", default: false, null: false
+    t.boolean "kritis_breakglass", default: false, null: false
   end
 
   create_table "kubernetes_deploy_group_roles", id: :integer do |t|
@@ -536,7 +548,6 @@ ActiveRecord::Schema.define(version: 2019_05_14_231932) do
     t.text "dashboard"
     t.boolean "email_committers_on_automated_deploy_failure", default: false, null: false
     t.string "static_emails_on_automated_deploy_failure"
-    t.string "datadog_monitor_ids"
     t.string "jenkins_job_names"
     t.string "next_stage_ids"
     t.boolean "no_code_deployed", default: false, null: false
@@ -598,6 +609,7 @@ ActiveRecord::Schema.define(version: 2019_05_14_231932) do
     t.string "time_format", default: "relative", null: false
     t.datetime "last_login_at"
     t.datetime "last_seen_at"
+    t.string "github_username"
     t.index ["external_id", "deleted_at"], name: "index_users_on_external_id_and_deleted_at", unique: true
   end
 

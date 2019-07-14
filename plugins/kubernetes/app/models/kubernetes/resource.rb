@@ -11,7 +11,7 @@ module Kubernetes
     class Base
       TICK = 2 # seconds
       UNSETTABLE_METADATA = [:selfLink, :uid, :resourceVersion, :generation, :creationTimestamp].freeze
-      attr_reader :template
+      attr_reader :template, :deploy_group
 
       def initialize(template, deploy_group, autoscaled:, delete_resource:)
         @template = template
@@ -90,7 +90,7 @@ module Kubernetes
         if @delete_resource
           0
         else
-          replica_source.dig(:spec, :replicas) || (RoleConfigFile.primary?(@template) ? 1 : 0)
+          @template.dig(:spec, :replicas) || (RoleConfigFile.primary?(@template) ? 1 : 0)
         end
       end
 
@@ -98,11 +98,6 @@ module Kubernetes
 
       def error_location
         "#{name} #{namespace} #{@deploy_group.name}"
-      end
-
-      # when autoscaling we expect as many pods as we currently have
-      def replica_source
-        (@autoscaled && resource) || @template
       end
 
       def backoff_wait(backoff, reason)
@@ -126,7 +121,6 @@ module Kubernetes
       def create
         return if @delete_resource
         restore_template do
-          @template[:metadata].delete(:resourceVersion)
           request(:create, @template)
         end
         expire_resource_cache
@@ -142,8 +136,11 @@ module Kubernetes
       end
 
       def ensure_not_updating_match_labels
-        # blue-green deply is allowed to do this, see template_filler.rb + deploy_executor.rb
+        # blue-green deploy is allowed to do this, see template_filler.rb + deploy_executor.rb
         return if @template.dig(:spec, :selector, :matchLabels, :blue_green)
+
+        # allow manual migration when user is aware of the issue and wants to do manual cleanup
+        return if @template.dig(:metadata, :annotations, :"samson/allow_updating_match_labels") == "true"
 
         static = [:spec, :selector, :matchLabels]
         # fallback is only for tests that use simple replies
@@ -165,6 +162,7 @@ module Kubernetes
         # when autoscaling on a resource with replicas we should keep replicas constant
         # (not setting replicas will make it use the default of 1)
         path = [:spec, :replicas]
+        replica_source = (@autoscaled && resource) || @template
         copy.dig_set(path, replica_source.dig(*path)) if @template.dig(*path)
 
         # copy fields
@@ -218,9 +216,14 @@ module Kubernetes
             end
           rescue Kubeclient::HttpError => e
             message = e.message.to_s
-            if message.include?(" is invalid:") || message.include?(" no kind ")
+            if verb != :get && e.error_code == 409
+              # Update version and retry if we ran into a conflict from VersionedUpdate
+              args[0][:metadata][:resourceVersion] = fetch_resource.dig(:metadata, :resourceVersion)
+              raise # retry
+            elsif message.include?(" is invalid:") || message.include?(" no kind ")
               raise_kubernetes_error(message)
             else
+              e.message.insert(0, "Kubernetes error #{error_location}: ") unless e.message.frozen?
               raise
             end
           end
@@ -271,15 +274,14 @@ module Kubernetes
       end
     end
 
-    class Service < Base
+    class Service < VersionedUpdate
       private
 
-      # updating a service requires re-submitting resourceVersion and clusterIP
+      # updating a service requires re-submitting clusterIP
       # we also keep whitelisted fields that are manually changed for load-balancing
       # (meant for labels, but other fields could work too)
       def persistent_fields
         [
-          "metadata.resourceVersion",
           "spec.clusterIP",
           *ENV["KUBERNETES_SERVICE_PERSISTENT_FIELDS"].to_s.split(/\s,/),
           *@template.dig(:metadata, :annotations, :"samson/persistent_fields").to_s.split(/[,\s]+/)
@@ -475,6 +477,9 @@ module Kubernetes
       # Noop because we are scared ... should later only allow deletion if samson created it
       def delete
       end
+    end
+
+    class HorizontalPodAutoscaler < Base
     end
 
     def self.build(*args)

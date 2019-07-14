@@ -5,9 +5,33 @@ module Kubernetes
     # not perfect since the actual rules are stricter
     VALID_LABEL_VALUE = /\A[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?\z/.freeze # also used in js ... cannot use /i
 
+    # TODO: lookup dynamically
     NAMESPACELESS_KINDS = [
-      'APIService', 'ClusterRoleBinding', 'ClusterRole', 'CustomResourceDefinition', 'Namespace', 'PodSecurityPolicy'
+      'ComponentStatus',
+      'Namespace',
+      'Node',
+      'PersistentVolume',
+      'MutatingWebhookConfiguration',
+      'ValidatingWebhookConfiguration',
+      'CustomResourceDefinition',
+      'APIService',
+      'TokenReview',
+      'SelfSubjectAccessReview',
+      'SelfSubjectRulesReview',
+      'SubjectAccessReview',
+      'CertificateSigningRequest',
+      'PodSecurityPolicy',
+      'NodeMetrics',
+      'PodSecurityPolicy',
+      'ClusterRoleBinding',
+      'ClusterRole',
+      'PriorityClass',
+      'StorageClass',
+      'VolumeAttachment',
+      'ImageSecurityPolicy'
     ].freeze
+
+    # for non-namespace deployments: names that should not be changed since they will break dependencies
     IMMUTABLE_NAME_KINDS = [
       'APIService', 'CustomResourceDefinition', 'ConfigMap', 'Role', 'ClusterRole', 'Namespace', 'PodSecurityPolicy',
       'ClusterRoleBinding'
@@ -30,16 +54,18 @@ module Kubernetes
       validate_name_kinds_are_unique
       validate_single_primary_kind
       validate_api_version
-      validate_containers
+      validate_containers_exist
       validate_container_name
+      validate_container_resources
       validate_job_restart_policy
       validate_pod_disruption_budget
-      validate_numeric_limits
+      validate_numeric_cpu_limits
       validate_project_and_role_consistent
       validate_team_labels
       validate_not_matching_team
       validate_stateful_set_service_consistent
       validate_stateful_set_restart_policy
+      validate_load_balancer
       unless validate_annotations
         validate_prerequisites_kinds
         validate_prerequisites_consistency
@@ -78,6 +104,17 @@ module Kubernetes
 
     private
 
+    def validate_load_balancer
+      allowed = ENV["KUBERNETES_ALLOWED_LOAD_BALANCER_NAMESPACES"].to_s.split(",")
+      return if allowed.empty?
+      bad = @elements.map do |e|
+        next unless e[:kind] == "Service" && e.dig(:spec, :type) == "LoadBalancer"
+        namespace = e.dig(:metadata, :namespace) || "unset"
+        namespace unless allowed.include?(namespace)
+      end.compact
+      @errors << "LoadBalancer is not allowed in #{bad.join(", ")} namespace" if bad.any?
+    end
+
     def validate_name
       @errors << "Needs a metadata.name" unless map_attributes([:metadata, :name]).all?
     end
@@ -104,6 +141,7 @@ module Kubernetes
 
     # template_filler.rb sets name for everything except for IMMUTABLE_NAME_KINDS, keep_name, and Service
     # we make sure users dont use the same name on the same kind twice, to avoid them overwriting each other
+    # if they run in the default namespace
     def validate_name_kinds_are_unique
       # do not validate on global since we hope to be on namespace soon
       return if !@project || !@project.override_resource_names?
@@ -126,12 +164,13 @@ module Kubernetes
     end
 
     # spec actually allows this, but blows up when used
-    def validate_numeric_limits
-      [:requests, :limits].each do |scope|
-        base = [:spec, :containers, :resources, scope, :cpu]
-        types = map_attributes(base, elements: templates).flatten(1).map(&:class)
-        next if (types - [NilClass, String]).none?
-        @errors << "Numeric cpu resources are not supported"
+    def validate_numeric_cpu_limits
+      (pod_containers + init_containers).flatten(1).each do |container|
+        [:requests, :limits].each do |scope|
+          path = [:resources, scope, :cpu]
+          next if [NilClass, String].include?(container.dig(*path).class)
+          @errors << "Numeric cpu resources are not supported"
+        end
       end
     end
 
@@ -140,7 +179,7 @@ module Kubernetes
         kind = resource[:kind]
 
         label_paths = metadata_paths(resource).map { |p| p + [:labels] } +
-          if resource.dig(:spec, :selector, :matchLabels)
+          if resource.dig(:spec, :selector, :matchLabels) || resource[:kind] == "Deployment"
             [[:spec, :selector, :matchLabels]]
           elsif resource.dig(:spec, :selector) && !allow_selector_cross_match?(resource)
             [[:spec, :selector]]
@@ -210,7 +249,7 @@ module Kubernetes
         "OnDelete will be supported soon but is brittle/rough, prefer RollingUpdate on kubernetes 1.7+."
     end
 
-    def validate_containers
+    def validate_containers_exist
       return if pod_containers.all? { |c| c.is_a?(Array) && c.any? }
       @errors << "All templates need spec.containers"
     end
@@ -221,6 +260,22 @@ module Kubernetes
         @errors << "Containers need a name"
       elsif bad = names.grep_v(VALID_LABEL_VALUE).presence
         @errors << "Container name #{bad.join(", ")} did not match #{VALID_LABEL_VALUE.source}"
+      end
+    end
+
+    # keep in sync with TemplateFiller#set_resource_usage
+    def validate_container_resources
+      (pod_containers.map { |c| c[1..-1] || [] } + init_containers).flatten(1).each do |container|
+        [
+          [:resources, :requests, :cpu],
+          [:resources, :requests, :memory],
+          [:resources, :limits, :cpu],
+          [:resources, :limits, :memory],
+        ].each do |path|
+          next if container.dig(*path)
+          name = container[:name] || container[:image] || "unknown"
+          @errors << "Container #{name} is missing #{path.join(".")}"
+        end
       end
     end
 

@@ -113,7 +113,7 @@ Kubernetes::Release
 For each container (including init containers) Samson finds or creates a matching Docker image for the Git SHA that is being deployed.
 Samson always sets the Docker digest, and not a tag, to make deployments immutable.
 
-If `KUBERNETES_ADDITIONAL_CONTAINERS_WITHOUT_DOCKERFILE=true` is set, it will only enforce this for the first container.
+If `KUBERNETES_ADDITIONAL_CONTAINERS_WITHOUT_DOCKERFILE=true` is set, it will only enforce builds for the first container.
 
 Samson matches builds to containers by looking at the `containers[].samson/dockerfile` attribute or the
 base image name (part after the last `/`), if the project has enabled `Docker images built externally`.
@@ -219,15 +219,19 @@ This can be useful for Migrations (see above).
 
 ### Changing templates via ENV
 
-For custom things that need to be different between environments/deploy-groups.
+For things that need to be different between environments/deploy-groups.
 
 Use an annotation to configure what will to be replaced:
 ```
-metadata.annotations.samson/set_via_env_json-metadata.labels.custom: SOME_ENV_VAR
-or for paths failing dns name validations:
-metadata.annotations.samson-set-via-env-json-metadata.labels.custom: SOME_ENV_VAR
+metadata.annotations.samson/set_via_env_json: |
+  metadata.labels.custom: FOO_ENV_VAR
+  metadata.labels.other: BAR_ENV_VAR
 ```
+
 Then configure an ENV var with that same name and a value that is valid JSON.
+
+ - To set string values as env vars, use quotes, i.e. `"foo"`
+ - To set values inside of arrays use numbers as index `spec.containers.0.name`
 
 ### Allow randomly not-ready pods during readiness check
 
@@ -239,3 +243,18 @@ this is useful when dealing with large deployments that have some random failure
 To debug services or to create resources that needs to reference a selector that doesn't include team/role (like a Gateway), you can disable selector validation with:
 
 `metadata.annotations.samson/service_selector_across_roles: "true"`
+
+### Blocking LoadBalancer usage
+
+Set `KUBERNETES_ALLOWED_LOAD_BALANCER_NAMESPACES=foo,bar` to block all other namespaces from using them.
+
+### Updating matchLabels
+
+Samson will by default block updating `matchLabels` since it leads to abandoned pods.
+
+If you still want to change a matchLabel, for example project/role:
+
+ - set `metadata.annotations.samson/allow_updating_match_labels: "true"`
+ - deploy with renamed project/role
+ - manually delete pods from old Deployment (`kubectl delete pods -l project=old-name,role=old-role`)
+ - unset annotations from step 1

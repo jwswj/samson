@@ -171,6 +171,18 @@ describe Kubernetes::ReleaseDoc do
         create!.resource_template[2][:metadata][:labels][:project].must_equal 'foo'
       end
 
+      it "does not copy random annotations like secrets/set_via_env etc" do
+        template.dig(0, :metadata)[:annotations] = {"samson/minAvailable": '30%'}
+        create!.resource_template[2][:metadata][:annotations].keys.sort.must_equal [
+          :"samson/deploy_url", :"samson/updateTimestamp"
+        ]
+      end
+
+      it "copies keep-name so name stays in sync with the deployment" do
+        template.dig(0, :metadata)[:annotations] = {"samson/minAvailable": '30%', "samson/keep_name": 'true'}
+        assert create!.resource_template[2][:metadata][:annotations].key?(:"samson/keep_name")
+      end
+
       it "deletes when set to 0" do
         template.dig(0, :metadata)[:annotations] = {"samson/minAvailable": '0'}
         create!.resource_template[2][:delete].must_equal true
@@ -212,6 +224,31 @@ describe Kubernetes::ReleaseDoc do
       doc.instance_variable_get(:@previous_resources).must_equal([nil, nil]) # will not revert
     end
 
+    it "deploys resources in DEPLOY_SORT_ORDER order" do
+      configs = YAML.load_stream(read_kubernetes_sample_file('kubernetes_rbac.yml'))
+      configs.each { |c| c['metadata']['namespace'] = 'pod1' if c['metadata']['namespace'].present? }
+      doc.send(:resource_template=, doc.resource_template + configs)
+
+      expected_request_order = [:serviceaccounts, :clusterroles, :clusterrolebindings, :services, :deployments]
+      request_order = []
+      regex = %r{
+        http://foobar.server(:80)?/apis?/
+        (extensions/|rbac.authorization.k8s.io/)?
+        v1(beta\d)?/
+        (namespaces/pod1/)?
+        (\w+)
+      }x
+      stub_request(:get, %r{#{regex}/some-project.*}).to_raise(kube_404)
+      stub_request(:post, regex).to_return do |request|
+        request_order << regex.match(request.uri)[5].to_sym
+        {body: "{}"}
+      end
+
+      doc.deploy
+      doc.instance_variable_get(:@previous_resources).must_equal([nil, nil, nil, nil, nil]) # will not revert
+      request_order.must_equal expected_request_order
+    end
+
     it "remembers the previous deploy in case we have to revert" do
       # check service ... do nothing
       stub_request(:get, service_url).to_return(body: '{"SER":"VICE"}')
@@ -223,15 +260,18 @@ describe Kubernetes::ReleaseDoc do
       client.expects(:update_deployment).returns("Rest client resonse")
 
       doc.deploy
-      doc.instance_variable_get(:@previous_resources).must_equal([{DE: "PLOY"}, {SER: "VICE"}])
+      doc.instance_variable_get(:@previous_resources).must_equal([{SER: "VICE"}, {DE: "PLOY"}])
     end
   end
 
   describe '#revert' do
     it "reverts all resources" do
-      doc.instance_variable_set(:@previous_resources, [{DE: "PLOY"}, {SER: "VICE"}])
-      doc.send(:resources)[0].expects(:revert).with(DE: "PLOY")
-      doc.send(:resources)[1].expects(:revert).with(SER: "VICE")
+      doc.instance_variable_set(:@previous_resources, [{SER: "VICE"}, {DE: "PLOY"}])
+      resources = doc.send(:resources)
+      resources.detect { |r| r.is_a? Kubernetes::Resource::Deployment }.
+        expects(:revert).with(DE: "PLOY")
+      resources.detect { |r| r.is_a? Kubernetes::Resource::Service }.
+        expects(:revert).with(SER: "VICE")
       doc.revert
     end
 

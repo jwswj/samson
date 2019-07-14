@@ -2,22 +2,12 @@
   <legend>Datadog</legend>
   <div class="col-lg-offset-2">
     <div class="form-group">
+      <h3>Deploy events with tags <%= additional_info "In addition to started/finished tags), separated by <code>;</code><br/>Leave empty to not send notifications.".html_safe %></h3>
       <div class="col-lg-6">
-        <%= form.text_field :datadog_tags, class: "form-control", placeholder: "Datadog tags" %>
-        <span class="help-block">
-          Tags that should be used on deploy events, separated by <code>;</code><br/>
-          Leave empty to not send notifications.
-        </span>
+        <%= form.text_field :datadog_tags, class: "form-control", placeholder: "Datadog deploy event tags" %>
       </div>
     </div>
 
-    <div class="form-group">
-      <div class="col-lg-6">
-        <%= form.text_field :datadog_monitor_ids, class: "form-control", placeholder: "Datadog Monitor Ids" %>
-        <span class="help-block">
-          Datadog monitor ids (comma separated)
-        </span>
-      </div>
-    </div>
+    <%= render "samson_datadog/datadog_monitor_queries_fields", form: form %>
   </div>
 </fieldset>
