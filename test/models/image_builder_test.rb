@@ -135,22 +135,6 @@ describe ImageBuilder do
 
       before do
         DockerRegistry.expects(:all).returns([DockerRegistry.new("http://fo+o:ba+r@ba+z.com")])
-        ImageBuilder.class_variable_set(:@@docker_major_version, nil)
-      end
-
-      it "uses email flag when docker is old" do
-        ImageBuilder.expects(:read_docker_version).returns("1.12.0")
-        called[1].must_equal "docker login --username fo\\+o --password ba\\+r --email no@example.com ba\\+z.com"
-      end
-
-      it "uses email flag when docker check fails" do
-        ImageBuilder.expects(:read_docker_version).raises(Timeout::Error)
-        called[1].must_equal "docker login --username fo\\+o --password ba\\+r --email no@example.com ba\\+z.com"
-      end
-
-      it "does not use email flag on newer docker versions" do
-        ImageBuilder.expects(:read_docker_version).returns("17.0.0")
-        called[1].must_equal "docker login --username fo\\+o --password ba\\+r ba\\+z.com"
       end
 
       it "can do a real docker check" do
@@ -245,7 +229,7 @@ describe ImageBuilder do
     end
 
     describe "with secondary registry" do
-      let(:secondary_repo) { project.docker_repo(DockerRegistry.all[1], 'Dockerfile') }
+      let(:secondary_repo) { project.docker_repo(DockerRegistry.all.to_a[1], 'Dockerfile') }
 
       with_registries ["docker-registry.example.com", 'extra.registry']
 

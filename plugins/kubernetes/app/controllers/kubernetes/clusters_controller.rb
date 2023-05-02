@@ -13,15 +13,28 @@ class Kubernetes::ClustersController < ResourceController
 
   def index
     @kubernetes_clusters = ::Kubernetes::Cluster.all.sort_by { |c| Samson::NaturalOrder.convert(c.name) }
-    if params[:capacity]
-      @cluster_nodes = Samson::Parallelizer.map(@kubernetes_clusters) do |cluster|
-        [cluster.id, cluster.schedulable_nodes]
-      end.to_h
+
+    respond_to do |format|
+      format.html do
+        if params[:capacity]
+          @cluster_nodes = Samson::Parallelizer.map(@kubernetes_clusters) do |cluster|
+            [cluster.id, cluster.schedulable_nodes]
+          end.to_h
+        end
+      end
+      format.json do
+        render_as_json(
+          :kubernetes_clusters,
+          @kubernetes_clusters,
+          nil,
+          allowed_includes: [:deploy_groups]
+        )
+      end
     end
   end
 
   def seed_ecr
-    SamsonAwsEcr::Engine.refresh_credentials
+    SamsonAwsEcr::SamsonPlugin.refresh_credentials
     @kubernetes_cluster.namespaces.each do |namespace|
       update_secret namespace
     end
@@ -38,7 +51,7 @@ class Kubernetes::ClustersController < ResourceController
 
   def resource_params
     params = super.permit(
-      :name, :config_filepath, :config_context, :description, :ip_prefix,
+      :name, :config_filepath, :config_context, :description,
       :auth_method, :api_endpoint, :verify_ssl, :client_cert, :client_key,
       :kritis_breakglass,
       deploy_group_ids: []

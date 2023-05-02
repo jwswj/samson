@@ -13,14 +13,13 @@ class Lock < ActiveRecord::Base
 
   belongs_to :resource, polymorphic: true, optional: true
   belongs_to :user, inverse_of: :locks
-  belongs_to :environment, optional: true
+  belongs_to :environment, optional: true, inverse_of: false
 
   before_validation :nil_out_blank_resource_type
 
   validates :user_id, presence: true
   validates :description, presence: true, if: :warning?
   validates :resource_type, inclusion: RESOURCE_TYPES
-  validate :unique_global_lock, on: :create
   validate :valid_delete_at, on: :create
 
   after_save :expire_all_cached
@@ -104,12 +103,8 @@ class Lock < ActiveRecord::Base
     self.resource_type = resource_type.presence
   end
 
-  # our index does not work on nils, so we have to verify by hand
-  def unique_global_lock
-    errors.add(:resource_id, :invalid) if global? && Lock.global.first
-  end
-
   def valid_delete_at
     errors.add(:delete_at, 'Date must be in the future') if delete_at&.past?
   end
 end
+Samson::Hooks.load_decorators(Lock)

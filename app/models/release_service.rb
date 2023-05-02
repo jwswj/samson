@@ -24,13 +24,14 @@ class ReleaseService
 
   def push_tag_to_git_repository(version, commit)
     GITHUB.create_release(@project.repository_path, version, target_commitish: commit)
+  rescue Octokit::UnprocessableEntity => e
+    raise unless e.message.include?("code: already_exists")
   end
 
   def ensure_tag_in_git_repository(tag)
     tries = Integer(ENV["RELEASE_TAG_IN_REPO_RETRIES"] || 4)
     Samson::Retry.until_result tries: tries, wait_time: 1, error: "Unable to find ref" do
-      @project.repository.update_mirror
-      @project.repository.commit_from_ref(tag)
+      @project.repo_commit_from_ref(tag)
     end
   end
 

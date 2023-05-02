@@ -21,9 +21,12 @@ module JsonRenderer
       includes.each do |association_name|
         resources.each do |resource, resource_as_json|
           associated = resource.public_send(association_name)
-          if associated.is_a?(ActiveRecord::Base) || associated.nil?
-            resource_as_json["#{association_name}_id"] ||= associated&.id
+          if associated.is_a?(ActiveRecord::Base)
+            resource_as_json["#{association_name}_id"] ||= associated.id
             (associations[association_name.pluralize] ||= []) << associated
+          elsif associated.nil?
+            resource_as_json["#{association_name}_id"] ||= nil
+            associations[association_name.pluralize] ||= []
           else
             resource_as_json["#{association_name.singularize}_ids"] = associated.map(&:id)
             (associations[association_name] ||= []).concat associated
@@ -71,7 +74,7 @@ module JsonRenderer
 
     render status: status, json: json
   rescue ActiveRecord::AssociationNotFoundError, JsonRenderer::ForbiddenIncludesError
-    render status: 400, json: {status: 400, error: $!.message}
+    render status: :bad_request, json: {status: 400, error: $!.message}
   end
 
   def permit_requested(field, allowed = [])

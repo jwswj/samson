@@ -59,6 +59,7 @@ class JobExecution
       @job.failed!
     end
   rescue JobQueue::Cancel
+    @job.reload # fetch canceller, set by job.rb, so notifications are correct
     @job.cancelling!
     raise
   rescue => e
@@ -86,10 +87,10 @@ class JobExecution
     @finish_callbacks << -> do
       begin
         yield
-      rescue => exception
-        message = "Finish hook failed: #{exception.message}"
-        output.puts message
-        Samson::ErrorNotifier.notify(exception, error_message: message, parameters: {job_url: job.url})
+      rescue => e
+        message = "Finish hook failed: #{e.message}"
+        url = Samson::ErrorNotifier.notify(e, error_message: message, parameters: {job_url: job.url}, sync: true)
+        output.puts "#{message}\n#{url}"
       end
     end
   end
@@ -141,6 +142,7 @@ class JobExecution
     payload = {
       stage: (@stage&.name || "none"),
       project: @job.project.name,
+      kubernetes: kubernetes?,
       production: @stage&.production?
     }
 
@@ -156,26 +158,36 @@ class JobExecution
 
   # ideally the plugin should handle this, but that was even hackier
   def kubernetes?
-    defined?(SamsonKubernetes::Engine) && @stage&.kubernetes
+    defined?(SamsonKubernetes::SamsonPlugin) && @stage&.kubernetes
   end
 
   def setup(dir)
     Rails.logger.info("Setting up Job Execution #{id}")
-    return unless resolve_ref_to_commit
 
-    kubernetes? || @repository.checkout_workspace(dir, @reference)
+    # when job was created with exact commit, do not try to re-resolve it from reference "deploy_branch_with_commit"
+    # (normally it should never be nil either, need to hunt down if that is only a test bug)
+    source = (@job.commit && @job.commit != @reference ? @job.commit : @reference)
+
+    return unless resolve_ref_to_commit(source)
+
+    # checking out reference can be different from commit when a new commit is pushed, but we want nice branch names
+    kubernetes? || @repository.checkout_workspace(dir, source)
   end
 
-  def resolve_ref_to_commit
-    commit = @repository.commit_from_ref(@reference)
-    tag = @repository.fuzzy_tag_from_ref(@reference)
+  def resolve_ref_to_commit(source)
+    commit = Samson::Retry.until_result tries: 4, wait_time: 1, error: nil do
+      found = @repository.commit_from_ref(source)
+      @repository.update_mirror unless found # next try will find it ...
+      found
+    end
+    tag = @repository.fuzzy_tag_from_ref(source)
     if commit
       @job.update_git_references!(commit: commit, tag: tag)
 
       @output.puts("Commit: #{commit}")
       true
     else
-      @output.puts("Could not find commit for #{@reference}")
+      @output.puts("Could not find commit for #{source}")
       false
     end
   end
@@ -212,7 +224,7 @@ class JobExecution
 
   def make_builds_available
     # wait for builds to finish
-    builds = build_finder.ensure_succeeded_builds
+    builds = deploy.builds = build_finder.ensure_succeeded_builds
 
     # pre-download the necessary images in case they are not public
     ImageBuilder.local_docker_login do |login_commands|

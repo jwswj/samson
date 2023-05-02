@@ -53,14 +53,14 @@ module Samson
     end
 
     def jenkins_job_cache_key
-      job_name + "_conf"
+      "#{job_name}_conf"
     end
 
     def jenkins_job_config
       conf = Rails.cache.fetch(
         jenkins_job_cache_key,
         expires_in: JENKINS_JOB_CACHE_TIME,
-        race_condition_ttl: 5.minute
+        race_condition_ttl: 5.minutes
       ) do
         client.job.get_config(job_name)
       end
@@ -103,10 +103,8 @@ module Samson
       params_array = []
       params.each do |param|
         param.children.each do |value|
-          if value.name == "name"
-            if val = value.content.split(JENKINS_BUILD_PARAMETRS_PREFIX, 2)[1]
-              params_array << val
-            end
+          if value.name == "name" && val = value.content.split(JENKINS_BUILD_PARAMETRS_PREFIX, 2)[1]
+            params_array << val
           end
         end
       end
@@ -193,7 +191,7 @@ module Samson
 
     def build
       opts = {'build_start_timeout' => 60}
-      originated_from = deploy.project.name + '_' + deploy.stage.name + '_' + deploy.reference
+      originated_from = "#{deploy.project.name}_#{deploy.stage.name}_#{deploy.reference}"
       build_params = {
         buildStartedBy: deploy.user.name,
         originatedFrom: originated_from,
@@ -208,7 +206,7 @@ module Samson
           new_config = build_job_config(changes)
           post_job_config(new_config)
         end
-        build_params = build_params.map { |k, v| [JENKINS_BUILD_PARAMETRS_PREFIX + k.to_s, v] }.to_h
+        build_params = build_params.transform_keys { |k| JENKINS_BUILD_PARAMETRS_PREFIX + k.to_s }
       end
       client.job.build(job_name, build_params, opts).to_i
     rescue Timeout::Error => e
@@ -231,8 +229,8 @@ module Samson
       @response ||=
         begin
           client.job.get_build_details(job_name, jenkins_job_id)
-        rescue JenkinsApi::Exceptions::NotFound => error
-          {'result' => error.message, 'url' => '#'}
+        rescue JenkinsApi::Exceptions::NotFound => e
+          {'result' => e.message, 'url' => '#'}
         end
     end
 
@@ -252,8 +250,15 @@ module Samson
       end
 
       emails.compact!
-      emails.select! { |e| e.include?('@') }
-      emails.map! { |x| Mail::Address.new(x) }
+      emails.map! do |a|
+        begin
+          Mail::Address.new(a)
+        rescue
+          nil
+        end
+      end
+      emails.compact!
+      emails.select!(&:domain)
       if restricted_domain = ENV["EMAIL_DOMAIN"]
         emails.select! { |x| x.domain.casecmp(restricted_domain) == 0 }
       end

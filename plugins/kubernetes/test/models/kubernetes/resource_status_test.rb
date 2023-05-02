@@ -32,8 +32,8 @@ describe Kubernetes::ResourceStatus do
     end
 
     it "is restarted when pod is restarted" do
-      resource[:status][:containerStatuses] = [{restartCount: 1}]
-      details.must_equal "Restarted"
+      resource[:status][:containerStatuses] = [{restartCount: 1, name: "foo", state: {terminated: {reason: "Backoff"}}}]
+      details.must_equal "Restarted (foo Backoff)"
     end
 
     it "is failed when pod is failed" do
@@ -64,20 +64,52 @@ describe Kubernetes::ResourceStatus do
 
     it "errors when bad events happen" do
       events[0].merge!(type: "Warning", reason: "Boom")
-      expect_event_request { details.must_equal "Error event" }
+      expect_event_request do
+        details.must_equal "Error event"
+        assert status.finished
+      end
     end
 
     describe "non-pods" do
-      before { resource[:kind] = "Service" }
+      before { resource[:kind] = "NonIgnoredKind" }
 
       it "knows created non-pods" do
         events.clear
         expect_event_request { details.must_equal "Live" }
       end
 
-      it "knows failed non-pods" do
-        events[0].merge!(type: "Warning", reason: "Boom")
-        expect_event_request { details.must_equal "Error event" }
+      it "ignores known bad events" do
+        resource[:kind] = "HorizontalPodAutoscaler"
+        events[0].merge!(type: "Warning", reason: "FailedGetMetrics")
+        expect_event_request { details.must_equal "Live" }
+      end
+
+      it "ignores known bad events for service" do
+        resource[:kind] = "Service"
+        events[0].merge!(type: "Warning", reason: "FailedToUpdateEndpointSlices")
+        expect_event_request { details.must_equal "Live" }
+      end
+
+      describe "with bad event" do
+        before { events[0].merge!(type: "Warning", reason: "Boom") }
+
+        it "fails" do
+          expect_event_request { details.must_equal "Error event" }
+        end
+
+        it "ignores custom known bad events" do
+          resource[:metadata][:annotations] = {
+            "samson/ignore_events": "Boom"
+          }
+          expect_event_request { details.must_equal "Live" }
+        end
+
+        it "ignores non-matching custom known bad events" do
+          resource[:metadata][:annotations] = {
+            "samson/ignore_events": "Boing"
+          }
+          expect_event_request { details.must_equal "Error event" }
+        end
       end
     end
   end
@@ -92,6 +124,12 @@ describe Kubernetes::ResourceStatus do
     it "ignores previous events" do
       events.first[:lastTimestamp] = 30.seconds.ago.utc.iso8601
       result.size.must_equal 0
+    end
+
+    it "does not fail when missing lastTimestamp" do
+      events[0][:lastTimestamp] = nil
+      events[0][:metadata] = {creationTimestamp: 30.seconds.from_now.utc.iso8601}
+      result.size.must_equal 1
     end
 
     it "sorts" do

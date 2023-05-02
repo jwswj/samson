@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require_relative '../test_helper'
 
-SingleCov.covered! uncovered: 1
+SingleCov.covered!
 
 describe DeploysController do
   def self.with_and_without_project(&block)
@@ -143,11 +143,11 @@ describe DeploysController do
         before { get :show, params: {format: :text, project_id: project.to_param, id: deploy.to_param} }
 
         it "responds with a plain text file" do
-          assert_equal response.content_type, "text/plain"
+          assert_equal response.media_type, "text/plain"
         end
 
         it "responds with a .log file" do
-          assert response.header["Content-Disposition"] =~ /\.log"$/
+          assert response.header["Content-Disposition"] =~ /\.log"/
         end
       end
 
@@ -161,6 +161,16 @@ describe DeploysController do
         it "renders with includes" do
           get :show, params: {format: :json, id: deploy.to_param, includes: 'project,stage'}
           json.keys.must_equal ['deploy', 'projects', 'stages']
+        end
+
+        it "can request execution output" do
+          freeze_time
+          execution = JobExecution.new("master", deploy.job)
+          execution.output.puts "X"
+          Job.any_instance.expects(:execution).returns(execution)
+          params = {project_id: project, id: deploy, includes: "job", serialize_execution_output: true}
+          get :show, params: params, format: :json
+          json.dig("jobs", 0, "output").must_equal "[04:05:06] X\n"
         end
       end
     end
@@ -247,7 +257,7 @@ describe DeploysController do
 
       it "renders html" do
         get :index
-        assert_equal "text/html", @response.content_type
+        assert_equal "text/html", @response.media_type
         assert_response :ok
       end
 
@@ -338,7 +348,7 @@ describe DeploysController do
 
       it "filters for code_deployed" do
         Deploy.last.stage.update_column(:no_code_deployed, true)
-        get :index, params: {search: {code_deployed: "true"}}, format: "json"
+        get :index, params: {search: {code_deployed: "false"}}, format: "json"
         assert_response :ok
         deploys["deploys"].count.must_equal 3
       end
@@ -367,6 +377,23 @@ describe DeploysController do
         assigns[:deploys].map(&:id).sort.must_equal expected.map(&:id).sort
       end
 
+      it "ignores empty update fields" do
+        get :index, params: {search: {updated_at: ["", ""]}}, format: "json"
+        assert_response :ok
+      end
+
+      it "warns when only submitting single date field" do
+        get :index, params: {search: {updated_at: ["", "2020-02-10"]}}, format: "json"
+        assert_response :ok
+        assert flash[:alert]
+      end
+
+      it "fails when submitting to many date fields" do
+        assert_raises ArgumentError do
+          get :index, params: {search: {updated_at: ["A", "A", "A"]}}, format: "json"
+        end
+      end
+
       it "filters by deleted" do
         Deploy.last.soft_delete!
         get :index, params: {search: {deleted: "Project,Stage,Deploy"}}, format: "json"
@@ -379,6 +406,42 @@ describe DeploysController do
           get :index, params: {search: {group: "Blob-#{environments(:production).id}"}}, format: "json"
         end
         e.message.must_equal "Unsupported type Blob"
+      end
+
+      describe "stage_id" do
+        let(:params) { {project_id: 'foo', search: {stage_id: 'production'}} }
+
+        it "filters by stage permalink" do
+          get :index, params: params, format: "json"
+          assert_response :ok
+          deploys["deploys"].count.must_equal 3
+        end
+
+        it "filters by stage id" do
+          params[:search][:stage_id] = stages(:test_production).id
+          get :index, params: params, format: "json"
+          assert_response :ok
+          deploys["deploys"].count.must_equal 3
+        end
+
+        it "refuses to search all stages by permalink since that is most likely not what the user wanted" do
+          params.delete(:project_id)
+          get :index, params: params, format: "json"
+          assert_response 400
+        end
+
+        it "refuses to search stage by permalink + other conditions since that makes little sense" do
+          params[:search][:production] = true
+          get :index, params: params, format: "json"
+          assert_response 400
+        end
+      end
+    end
+
+    describe "#status" do
+      it "renders with format .json" do
+        get :status, params: {project_id: project, id: deploy}
+        json.fetch('status').must_equal deploy.status
       end
     end
 
@@ -539,6 +602,19 @@ describe DeploysController do
 
         assert_redirected_to project_deploy_path(project, deploy)
         deploy.reload.buddy.must_equal user
+      end
+
+      it 'alert when buddy bypass disabled' do
+        with_env DISABLE_BUDDY_BYPASS_FEATURE: "true" do
+          deploy.job.update_column(:user_id, user.id)
+          DeployService.stubs(:new).with(deploy.user).returns(deploy_service)
+
+          post :buddy_check, params: {project_id: project.to_param, id: deploy.id}
+
+          refute deploy.buddy
+          assert_redirected_to project_deploy_path(project, deploy)
+          assert flash[:alert]
+        end
       end
     end
 

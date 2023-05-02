@@ -5,7 +5,7 @@ ruby File.read('.ruby-version').strip
 
 # gems that have rails engines are are always needed
 group :preload do
-  gem 'rails', '5.2.2.1'
+  gem 'rails', '~> 6.1.7.3'
   gem 'dotenv'
   gem 'connection_pool'
   gem 'marco-polo'
@@ -15,10 +15,10 @@ group :preload do
   gem 'pagy'
   gem 'audited'
   gem 'soft_deletion'
-  gem 'doorkeeper'
+  gem 'doorkeeper', '~> 5.4.0' # TODO: upgrade breaks `rails c`
+  gem 'mail', '~> 2.7.0' # TODO: upgrade breaks `rails c`
 end
 
-gem 'bundler'
 gem 'dogstatsd-ruby'
 gem 'puma'
 gem 'attr_encrypted'
@@ -26,7 +26,7 @@ gem 'sawyer'
 gem 'dalli'
 gem 'omniauth'
 gem 'omniauth-oauth2'
-gem 'omniauth-github'
+gem 'omniauth-github', git: "https://github.com/omniauth/omniauth-github.git" # needs >1.3.0
 gem 'omniauth-google-oauth2'
 gem 'omniauth-ldap'
 gem 'omniauth-gitlab'
@@ -38,7 +38,7 @@ gem 'faraday-http-cache'
 gem 'warden'
 gem 'active_hash'
 gem 'ansible'
-gem 'github-markdown'
+gem 'commonmarker'
 gem 'coderay'
 gem 'net-http-persistent'
 gem 'concurrent-ruby'
@@ -68,6 +68,7 @@ group :sqlite do
 end
 
 group :assets do
+  gem 'sprockets', '~> 3.7'
   gem 'sass-rails'
   gem 'uglifier'
   gem 'bootstrap-sass', '>= 3.4.1'
@@ -88,19 +89,23 @@ group :assets do
   end
 end
 
+group :debugging do
+  gem 'pry-byebug'
+  gem 'pry-rails'
+  gem 'pry-rescue'
+  gem 'pry-stack_explorer'
+end
+
 group :development, :staging do
   gem 'rack-mini-profiler'
 end
 
 group :development, :test do
-  gem 'byebug'
   gem 'bootsnap'
-  gem 'pry-rails'
-  gem 'pry-byebug'
-  gem 'pry'
   gem 'awesome_print'
   gem 'brakeman'
   gem 'rubocop'
+  gem 'rubocop-rails'
   gem 'flay'
   gem 'parallel_tests'
   gem 'forking_test_runner'

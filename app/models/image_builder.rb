@@ -33,8 +33,7 @@ class ImageBuilder
         credentials = DockerRegistry.all.select { |r| r.password && r.username }.map do |r|
           username = r.username.shellescape
           password = r.password.shellescape
-          email = (docker_major_version >= 17 ? "" : "--email no@example.com ")
-          "docker login --username #{username} --password #{password} #{email}#{r.host.shellescape}"
+          "docker login --username #{username} --password #{password} #{r.host.shellescape}"
         end
 
         # run commands and then cleanup after
@@ -55,7 +54,8 @@ class ImageBuilder
             cache_option = " --cache-from #{cache_from.shellescape}"
           end
 
-          build_command = "docker build#{file}#{tag} .#{cache_option}"
+          # USER needs to be set or logrus fails with "while creating logrus local file hook"
+          build_command = "USER=nobody docker build#{file}#{tag} .#{cache_option}"
 
           return unless executor.execute(
             "cd #{dir.shellescape}",
@@ -64,7 +64,7 @@ class ImageBuilder
             executor.verbose_command(build_command)
           )
         end
-        executor.output.messages.scan(/Successfully built ([a-f\d]{12,})/).last&.first
+        executor.output.messages.scan(/(?:Successfully built |writing image sha256:)([a-f\d]{12,})/).last&.last
       end
     end
 
@@ -119,21 +119,6 @@ class ImageBuilder
       end
 
       digest
-    end
-
-    # TODO: same as in config/initializers/docker.rb ... dry it up
-    def docker_major_version
-      @@docker_major_version ||=
-        begin
-          Timeout.timeout(0.2) { read_docker_version[/(\d+)\.\d+\.\d+/, 1].to_i }
-        rescue Timeout::Error
-          0
-        end
-    end
-
-    # just here to get stubbed
-    def read_docker_version
-      `docker -v 2>/dev/null`
     end
   end
 end

@@ -8,6 +8,7 @@ SingleCov.covered!
 describe JobQueue do
   fake_job = Class.new do
     attr_reader :deploy
+
     def initialize(deploy)
       @deploy = deploy
     end
@@ -17,6 +18,7 @@ describe JobQueue do
   fake_execution = Class.new do
     attr_reader :id, :job
     attr_writer :thread
+
     def initialize(id, job)
       @id = id
       @job = job
@@ -168,16 +170,14 @@ describe JobQueue do
     end
 
     describe 'queue length' do
-      def assert_queue_length_notifications
+      def assert_queue_length_notifications(&block)
         states = [
           [1, 0], # add active
           [1, 1], # add queued
           [1, 0], # done active ... enqueue queued
           [0, 0], # done queued
         ]
-        states.each do |t, q|
-          yield(t, q)
-        end
+        states.each(&block)
         with_a_queued_job {} # noop
       end
 
@@ -415,7 +415,9 @@ describe JobQueue do
           sleep 0.1 # make sure it waits
           e = $!
         end
+
       subject.instance.instance_variable_get(:@threads)[1] = t
+      sleep 0.01 # make thread start
       subject.clear
       maxitest_wait_for_extra_threads
       e.class.must_equal RuntimeError

@@ -3,19 +3,19 @@ module Kubernetes
   module Api
     class Pod
       INIT_CONTAINER_KEY = :'pod.beta.kubernetes.io/init-containers'
-      INGORED_AUTOSCALE_EVENT_REASONS = [
-        "FailedGetMetrics",
-        "FailedRescale",
-        "FailedGetResourceMetric",
-        "FailedGetExternalMetric",
-        "FailedComputeMetricsReplicas"
+      WAITING_FOR_RESOURCES = [
+        "FailedScheduling",
+        "FailedCreatePodSandBox",
+        "FailedAttachVolume",
+        "OutOfcpu",
+        "OutOfmemory"
       ].freeze
-      WAITING_FOR_RESOURCES = ["FailedScheduling", "FailedCreatePodSandBox", "FailedAttachVolume"].freeze
 
       attr_writer :events
 
       def self.init_containers(pod)
         containers = pod.dig(:spec, :initContainers) || []
+        # TODO: remove this deprecated support
         if json = pod.dig(:metadata, :annotations, Kubernetes::Api::Pod::INIT_CONTAINER_KEY)
           containers += JSON.parse(json, symbolize_names: true)
         end
@@ -25,6 +25,10 @@ module Kubernetes
       def initialize(api_pod, client: nil)
         @pod = api_pod
         @client = client
+      end
+
+      def uid
+        @pod.dig(:metadata, :uid)
       end
 
       def live?
@@ -39,8 +43,13 @@ module Kubernetes
         phase == 'Failed'
       end
 
-      def restarted?
-        @pod.dig(:status, :containerStatuses)&.any? { |s| s.fetch(:restartCount) > 0 }
+      def restart_details
+        statuses = (@pod.dig(:status, :containerStatuses) || []) + (@pod.dig(:status, :initContainerStatuses) || [])
+        statuses.detect do |s|
+          next unless s.fetch(:restartCount) > 0
+          reason = s.dig(:lastState, :terminated, :reason) || s.dig(:state, :terminated, :reason) || "Unknown"
+          return "Restarted (#{s[:name]} #{reason})"
+        end
       end
 
       def phase
@@ -64,10 +73,10 @@ module Kubernetes
       # tries to get logs from current or previous pod depending on if it restarted
       # TODO: move into resource_status.rb
       def logs(container, end_time)
-        fetch_logs(container, end_time, previous: restarted?)
+        fetch_logs(container, end_time, previous: !!restart_details)
       rescue *SamsonKubernetes.connection_errors # not found or pod is initializing
         begin
-          fetch_logs(container, end_time, previous: !restarted?)
+          fetch_logs(container, end_time, previous: !restart_details)
         rescue *SamsonKubernetes.connection_errors
           nil
         end
@@ -87,16 +96,9 @@ module Kubernetes
       def events_indicating_failure
         @events_indicating_failure ||= begin
           bad = @events.dup
-          bad.reject! { |e| ignorable_hpa_event?(e) }
-          bad.reject! do |e|
-            e[:reason] == "Unhealthy" && e[:message] =~ /\A\S+ness probe failed/ && !probe_failed_to_often?(e)
-          end
+          bad.reject! { |event| ignored_probe_failure?(event) }
           bad
         end
-      end
-
-      def ignorable_hpa_event?(event)
-        event[:kind] == 'HorizontalPodAutoscaler' && INGORED_AUTOSCALE_EVENT_REASONS.include?(event[:reason])
       end
 
       # if the pod is still running we stream the logs until it times out to get as much info as possible
@@ -147,20 +149,20 @@ module Kubernetes
         Timeout.timeout(timeout, &block)
       end
 
-      def probe_failed_to_often?(event)
-        probe =
-          case event[:message]
-          when /\AReadiness/ then :readinessProbe
-          when /\ALiveness/ then :livenessProbe
-          else raise("Unknown probe #{event[:message]}")
-          end
-        event[:count] >= failure_threshold(probe)
+      def ignored_probe_failure?(event)
+        return false unless event[:reason] == "Unhealthy"
+        return false unless probe = event[:message][/\A(\S+) probe failed/, 1]
+        return false unless threshold = failure_threshold(event, :"#{probe.downcase}Probe")
+        event[:count] < threshold
       end
 
       # per http://kubernetes.io/docs/api-reference/v1/definitions/ default is 3
       # by default checks every 10s so that gives us 30s to pass
-      def failure_threshold(probe)
-        @pod.dig(:spec, :containers, 0, probe, :failureThreshold) || 3
+      def failure_threshold(event, probe_name)
+        return unless container_name = event.dig(:involvedObject, :fieldPath).to_s[/\Aspec.containers{(.*)}\z/, 1]
+        return unless container = @pod.dig(:spec, :containers).detect { |c| c[:name] == container_name }
+        return unless probe = container[probe_name]
+        probe[:failureThreshold] || 3
       end
 
       def ready?

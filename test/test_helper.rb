@@ -5,7 +5,8 @@ require 'bundler/setup'
 
 # anything loaded before coverage will be uncovered
 require 'single_cov'
-SingleCov::APP_FOLDERS << 'decorators' << 'presenters'
+SingleCov::APP_FOLDERS << 'presenters'
+SingleCov.rewrite { |path| path.sub("/lib/decorators/", "/decorators/") }
 SingleCov.setup :minitest, branches: true unless defined?(Spring)
 
 # rake adds these, but we don't need them / want to be consistent with using `ruby x_test.rb`
@@ -25,6 +26,15 @@ require 'mocha/setup'
 
 # Use ActiveSupport::TestCase for everything that was not matched before
 MiniTest::Spec::DSL::TYPES[-1] = [//, ActiveSupport::TestCase]
+
+# Use ActionController::TestCase for Controllers
+MiniTest::Spec::DSL::TYPES.unshift [/Controller$/, ActionController::TestCase]
+
+# Use ActionDispatch::IntegrationTest for everything that is marked Integration
+MiniTest::Spec::DSL::TYPES.unshift [/Integration$/, ActionDispatch::IntegrationTest]
+
+# Use ActionView::TestCase for Helpers
+MiniTest::Spec::DSL::TYPES.unshift [/Helper$/, ActionView::TestCase]
 
 Mocha::Expectation.class_eval do
   def capture(into)
@@ -58,7 +68,7 @@ ActiveSupport::TestCase.class_eval do
     refute record.valid?, "Expected record of type #{record.class.name} to be invalid"
 
     Array.wrap(error_keys).compact.each do |key|
-      record.errors.keys.must_include key
+      record.errors.attribute_names.must_include key
     end
   end
 
@@ -95,7 +105,6 @@ ActiveSupport::TestCase.class_eval do
     $stdout = old
   end
 
-  undef :assert_nothing_raised
   class << self
     undef :test
   end
@@ -216,13 +225,22 @@ ActiveSupport::TestCase.class_eval do
   end
 
   def self.only_callbacks_for_plugin(callback)
-    plugin_name = caller(1..1).first[/\/plugins\/([^\/]+)/, 1] || raise("not called from a plugin")
+    line = caller(1..1).first
+    plugin_name = line[/\/plugins\/([^\/]+)/, 1] || raise("not called from a plugin not #{line}")
     around { |t| Samson::Hooks.only_callbacks_for_plugin(plugin_name, callback, &t) }
   end
 
   def self.before_and_after(&block)
     before(&block)
     after(&block)
+  end
+
+  def with_caching
+    caching = ActionController::Base.perform_caching
+    ActionController::Base.perform_caching = true
+    yield
+  ensure
+    ActionController::Base.perform_caching = caching
   end
 end
 
@@ -270,7 +288,7 @@ ActionController::TestCase.class_eval do
       end
     end
 
-    def use_test_routes(controller)
+    def use_test_routes(controller, &block)
       controller_name = controller.name.underscore.sub('_controller', '')
       before do
         Rails.application.routes.draw do
@@ -282,6 +300,8 @@ ActionController::TestCase.class_eval do
               action: action
             )
           end
+
+          instance_eval(&block) if block_given?
         end
       end
 

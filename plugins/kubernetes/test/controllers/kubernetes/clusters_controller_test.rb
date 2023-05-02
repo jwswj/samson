@@ -27,6 +27,11 @@ describe Kubernetes::ClustersController do
         get :index, params: {capacity: true}
         assert_template :index
       end
+
+      it "renders json" do
+        get :index, format: :json
+        JSON.parse(response.body).keys.must_equal ["kubernetes_clusters"]
+      end
     end
 
     describe "#show" do
@@ -65,7 +70,7 @@ describe Kubernetes::ClustersController do
       let(:secrets_url) { "http://foobar.server/api/v1/namespaces/foobar/secrets" }
 
       before do
-        SamsonAwsEcr::Engine.expects(:refresh_credentials)
+        SamsonAwsEcr::SamsonPlugin.expects(:refresh_credentials)
         DockerRegistry.first.username = 'user'
         DockerRegistry.first.password = 'pass'
       end
@@ -99,7 +104,7 @@ describe Kubernetes::ClustersController do
       end
 
       it "renders when ECR plugin is active" do
-        SamsonAwsEcr::Engine.expects(:active?).returns(true)
+        SamsonAwsEcr::SamsonPlugin.expects(:active?).returns(true)
         get :new
         assert_template :new
       end
@@ -131,7 +136,7 @@ describe Kubernetes::ClustersController do
     describe "#create" do
       use_example_config
       let(:params) do
-        {config_filepath: ENV.fetch("KUBE_CONFIG_FILE"), config_context: 'default', name: 'foobar', ip_prefix: '1.2'}
+        {config_filepath: ENV.fetch("KUBE_CONFIG_FILE"), config_context: 'default', name: 'foobar'}
       end
 
       before { Kubernetes::Cluster.any_instance.stubs(connection_valid?: true) } # avoid real connection

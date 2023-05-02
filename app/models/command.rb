@@ -19,10 +19,10 @@ class Command < ActiveRecord::Base
     where(project_id: nil)
   end
 
-  # used commands in front then all available
+  # stage commands, then project commands by usage, then global commands by usage
   def self.for_stage(stage)
     usages = usage_ids
-    available = Command.for_project(stage.project).sort_by { |c| -usages.count(c.id) }
+    available = Command.for_project(stage.project).sort_by { |c| [c.global? ? 1 : 0, -usages.count(c.id)] }
     (stage.commands + available).uniq
   end
 
@@ -51,6 +51,16 @@ class Command < ActiveRecord::Base
     Project.pluck(:build_command_id).compact
   end
 
+  def self.cleanup_global
+    global.find_each do |command|
+      project_ids = command.usages.map { |u| u.is_a?(Project) ? u.id : u.project_id }
+      case project_ids.size
+      when 0 then command.destroy
+      when 1 then command.update_attribute(:project_id, project_ids.first)
+      end
+    end
+  end
+
   private
 
   def ensure_unused
@@ -61,3 +71,4 @@ class Command < ActiveRecord::Base
     end
   end
 end
+Samson::Hooks.load_decorators(Command)

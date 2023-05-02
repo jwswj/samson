@@ -20,6 +20,7 @@ module Kubernetes
       "" => 1,
       'm' => 0.001
     }.freeze
+    MIN_MEMORY = 6
 
     self.table_name = 'kubernetes_roles'
     GENERATED = '-change-me-'
@@ -46,14 +47,14 @@ module Kubernetes
     before_validation :strip_config_file
 
     validates :project, presence: true
-    validates :name, presence: true, format: Kubernetes::RoleValidator::VALID_LABEL_VALUE
+    validates :name, presence: true, format: Kubernetes::RoleValidator::VALID_CONTAINER_NAME
     validates :service_name,
-      uniqueness: {scope: :deleted_at},
-      format: Kubernetes::RoleValidator::VALID_LABEL_VALUE,
+      uniqueness: {case_sensitive: false, scope: :deleted_at},
+      format: Kubernetes::RoleValidator::VALID_CONTAINER_NAME,
       allow_nil: true
     validates :resource_name,
-      uniqueness: {scope: :deleted_at},
-      format: Kubernetes::RoleValidator::VALID_LABEL_VALUE,
+      uniqueness: {case_sensitive: false, scope: :deleted_at},
+      format: Kubernetes::RoleValidator::VALID_CONTAINER_NAME,
       allow_nil: true
     validates :manual_deletion_acknowledged, presence: {message: "must be set"}, if: :manual_deletion_required?
 
@@ -63,10 +64,11 @@ module Kubernetes
 
     class << self
       # create initial roles for a project by reading kubernetes/*{.yml,.yaml,json} files into roles
+      # TODO: support dynamic folders
       def seed!(project, git_ref)
         configs = kubernetes_config_files_in_repo(project, git_ref)
         if configs.empty?
-          raise Samson::Hooks::UserError, "No configs found in kubernetes folder or invalid git ref #{git_ref}"
+          raise Samson::Hooks::UserError, "No configs found in kubernetes/ folder or invalid git ref #{git_ref}"
         end
         existing = where(project: project, deleted_at: nil).to_a
 
@@ -95,9 +97,10 @@ module Kubernetes
       # ... we ignore those without to allow users to deploy a branch that changes roles
       def configured_for_project(project, git_sha)
         project.kubernetes_roles.not_deleted.select do |role|
-          path = role.config_file
-          next unless file_contents = project.repository.file_content(path, git_sha)
-          Kubernetes::RoleConfigFile.new(file_contents, path, project: project) # run validations
+          role.role_config_file(
+            git_sha,
+            project: project, ignore_missing: true, pull: true, deploy_group: nil
+          )
         end
       end
 
@@ -123,48 +126,58 @@ module Kubernetes
       end
     end
 
+    # TODO: support dynamic folders
     def defaults
-      return unless resource = role_config_file('HEAD')&.primary
-      spec = resource.fetch(:spec)
-      if resource[:kind] == "Pod"
-        replicas = 0 # these are one-off tasks most of the time, so we should not count them in totals
-      else
-        replicas = spec[:replicas] || 1
-        spec = spec.dig(:template, :spec) || {}
+      reference = project.release_branch.presence || ResourceController::DEFAULT_BRANCH
+      unless resource = role_config_file(reference, deploy_group: nil).primary
+        return {replicas: 1, requests_cpu: 0, requests_memory: MIN_MEMORY, limits_cpu: 0.01, limits_memory: MIN_MEMORY}
+      end
+      spec = RoleConfigFile.templates(resource).dig(0, :spec) || raise # primary always has templates
+
+      replicas =
+        if resource[:kind] == "Pod"
+          0 # these are one-off tasks most of the time, so we should not count them in totals
+        else
+          resource.dig(:spec, :replicas) || 1
+        end
+
+      if requests = spec.dig(:containers, 0, :resources, :requests)
+        requests_cpu = parse_resource_value(requests[:cpu], KUBE_CPU_VALUES)
+        requests_memory = parse_memory_value(requests)
       end
 
       return unless limits = spec.dig(:containers, 0, :resources, :limits)
       return unless limits_cpu = parse_resource_value(limits[:cpu], KUBE_CPU_VALUES)
-      return unless limits_memory = parse_resource_value(limits[:memory], KUBE_MEMORY_VALUES)
-      limits_memory /= 1000**2 # we store megabyte
-
-      if requests = spec.dig(:containers, 0, :resources, :requests)
-        requests_cpu = parse_resource_value(requests[:cpu], KUBE_CPU_VALUES)
-        if requests_memory = parse_resource_value(requests[:memory], KUBE_MEMORY_VALUES)
-          requests_memory /= 1000**2 # we store megabyte
-        end
-      end
+      return unless limits_memory = parse_memory_value(limits)
 
       {
-        limits_cpu: limits_cpu,
-        limits_memory: limits_memory.round,
         requests_cpu: requests_cpu || limits_cpu,
         requests_memory: (requests_memory || limits_memory).round,
-        replicas: replicas
+        replicas: replicas,
+        limits_cpu: limits_cpu,
+        limits_memory: limits_memory.round,
       }
     end
 
-    def role_config_file(reference)
-      self.class.role_config_file(project, config_file, reference)
-    rescue Samson::Hooks::UserError
-      nil
+    # allows passing the project to reuse the repository cache when doing multiple lookups
+    def role_config_file(reference, deploy_group:, project: project(), **args) # rubocop:disable Style/MethodCallWithoutArgsParentheses
+      file = config_file
+      file = file.sub('$deploy_group', deploy_group.env_value) if deploy_group && dynamic_folders?
+      self.class.role_config_file(project, file, reference, **args)
     end
 
     def manual_deletion_required?
       resource_name_change&.first || service_name_change&.first
     end
 
-    private
+    def dynamic_folders?
+      config_file.include?("$")
+    end
+
+    def parse_memory_value(limits)
+      return unless bytes = parse_resource_value(limits[:memory], KUBE_MEMORY_VALUES)
+      bytes / KUBE_MEMORY_VALUES.fetch("Mi")
+    end
 
     def nilify_service_name
       self.service_name = service_name.presence
@@ -183,16 +196,21 @@ module Kubernetes
       # all configs in kubernetes/* at given ref
       def kubernetes_config_files_in_repo(project, git_ref)
         folder = 'kubernetes'
-        files = project.repository.file_content(folder, git_ref).
-          to_s.split("\n").
-          map! { |f| "#{folder}/#{f}" }.
-          grep(/\.(yml|yaml|json)$/)
+        paths = project.repository.
+          file_content(folder, git_ref).
+          to_s. # nil when not found
+          split("\n")[2..] || []
+        paths.map! { |f| "#{folder}/#{f}" }
+
+        files = paths.grep(/\.(yml|yaml|json)$/)
 
         files.map! { |path| role_config_file(project, path, git_ref) }
       end
 
-      def role_config_file(project, path, git_ref)
-        return unless raw_template = project.repository.file_content(path, git_ref, pull: false)
+      # find and validate config or blow up with Samson::Hooks::UserError
+      def role_config_file(project, path, git_ref, ignore_missing: false, pull: false)
+        raw_template = project.repository.file_content(path, git_ref, pull: pull)
+        return nil if ignore_missing && !raw_template
         Kubernetes::RoleConfigFile.new(raw_template, path, project: project)
       end
     end

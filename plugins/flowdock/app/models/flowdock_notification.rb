@@ -13,29 +13,30 @@ class FlowdockNotification
     flowdock_service.notify_chat(message, ['buddy-request'])
   end
 
-  def buddy_request_completed(buddy, approved = true)
-    buddy_request_content = buddy_request_completed_message(approved, buddy)
-    flowdock_service.notify_chat(buddy_request_content, %w[buddy-request completed])
+  # TODO: delete this dead code
+  def buddy_request_completed(buddy, **args)
+    buddy_request_content = buddy_request_completed_message(buddy, **args)
+    flowdock_service.notify_chat(buddy_request_content, ['buddy-request', 'completed'])
   end
 
   def deliver
     subject = "[#{project.name}] #{@deploy.summary}"
     flowdock_service.notify_inbox(subject, content, deploy_url)
-  rescue Flowdock::ApiError => error
-    Rails.logger.error("Could not deliver flowdock message: #{error.message}")
-    Samson::ErrorNotifier.notify(error, error_message: 'Could not deliver flowdock message')
+  rescue Flowdock::ApiError => e
+    Rails.logger.error("Could not deliver flowdock message: #{e.message}")
+    Samson::ErrorNotifier.notify(e, error_message: 'Could not deliver flowdock message')
   end
 
   def default_buddy_request_message
     project = @deploy.project
-    ":pray: @team #{@deploy.user.name} is requesting approval" \
+    ":ship: @team #{@deploy.user.name} is requesting approval" \
       " to deploy #{project.name} **#{@deploy.reference}** to production."\
       " [Review this deploy](#{project_deploy_url(project, @deploy)})."
   end
 
   private
 
-  def buddy_request_completed_message(approved, buddy)
+  def buddy_request_completed_message(buddy, approved:)
     if user == buddy
       "#{user.name} bypassed deploy #{deploy_url}"
     else

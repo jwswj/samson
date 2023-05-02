@@ -153,7 +153,7 @@ describe Deploy do
 
     describe "buddy present" do
       it "returns 'bypassed' when bypassed" do
-        @deploy.update_attributes(buddy: user)
+        @deploy.update(buddy: user)
         @deploy.buddy_name.must_equal "bypassed"
         @deploy.buddy_email.must_equal "bypassed"
       end
@@ -226,7 +226,7 @@ describe Deploy do
 
   describe "#changeset" do
     it "creates a changeset to the previous deploy" do
-      deploy.changeset.commit.must_equal "abcabcaaabcabcaaabcabcaaabcabcaaabcabca1"
+      deploy.changeset.instance_variable_get(:@reference).must_equal "abcabcaaabcabcaaabcabcaaabcabcaaabcabca1"
     end
   end
 
@@ -471,6 +471,12 @@ describe Deploy do
     end
   end
 
+  describe "#status_url" do
+    it "builds an address for a deploy status" do
+      deploy.status_url.must_equal "http://www.test-url.com/projects/foo/deploys/#{deploy.id}/status.json"
+    end
+  end
+
   describe "#short_reference" do
     it "returns the first seven characters if the reference looks like a SHA" do
       deploy = Deploy.new(reference: "8e7c20937de160905e8ffb13be72eb483ab4170a")
@@ -541,7 +547,7 @@ describe Deploy do
 
     it "can update a deploy while something else is deployed" do
       create_deploy!(job_attributes: {user: user, status: "running"})
-      deploys(:succeeded_test).update_attributes!(buddy_id: 123)
+      deploys(:succeeded_test).update!(buddy_id: 123)
     end
   end
 
@@ -687,6 +693,10 @@ describe Deploy do
 
     it "includes the summary" do
       deploy.as_json.fetch("summary").must_equal deploy.summary_for_timeline
+    end
+
+    it "does not include the status_url" do
+      deploy.as_json.wont_include "status_url"
     end
   end
 

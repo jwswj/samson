@@ -1,12 +1,13 @@
 # frozen_string_literal: true
 module SamsonDatadog
-  class Engine < Rails::Engine
+  class SamsonPlugin < Rails::Engine
   end
 
   class << self
-    def send_notification(deploy, **kwargs)
-      if deploy.stage.datadog_tags.present?
-        DatadogNotification.new(deploy).deliver(**kwargs)
+    def send_event(deploy, tags:, **kwargs)
+      if user_tags = deploy.stage.datadog_tags_as_array.presence
+        tags = user_tags + tags
+        DatadogDeployEvent.deliver(deploy, tags: tags, **kwargs)
       end
     end
 
@@ -39,7 +40,8 @@ module SamsonDatadog
         end
 
         # some monitors alerting
-        job_execution.output.puts "Alert on datadog monitors:\n#{alerting.map { |m| "#{m.name} #{m.url}" }.join("\n")}"
+        alerts = alerting.map { |m| "#{m.name} #{m.url(deploy.stage.deploy_groups)}" }
+        job_execution.output.puts "Alert on datadog monitors:\n#{alerts.join("\n")}"
 
         alerting.each do |monitor|
           case monitor.query.failure_behavior
@@ -59,6 +61,7 @@ module SamsonDatadog
 end
 
 Samson::Hooks.view :project_form, "samson_datadog"
+Samson::Hooks.view :project_dashboard, "samson_datadog"
 Samson::Hooks.view :stage_form, "samson_datadog"
 Samson::Hooks.view :stage_show, "samson_datadog"
 
@@ -71,7 +74,7 @@ Samson::Hooks.callback(:stage_permitted_params) { [:datadog_tags, monitor_attrib
 Samson::Hooks.callback(:project_permitted_params) { [monitor_attributes] }
 
 Samson::Hooks.callback :before_deploy do |deploy, _|
-  SamsonDatadog.send_notification(deploy, additional_tags: ['started'], now: true)
+  SamsonDatadog.send_event(deploy, tags: ['started'], time: Time.now)
   SamsonDatadog.store_validation_monitors(deploy)
 end
 
@@ -80,5 +83,5 @@ Samson::Hooks.callback :validate_deploy do |deploy, job_execution|
 end
 
 Samson::Hooks.callback :after_deploy do |deploy, _job_execution|
-  SamsonDatadog.send_notification(deploy, additional_tags: ['finished'])
+  SamsonDatadog.send_event(deploy, tags: ['finished'], time: deploy.updated_at)
 end

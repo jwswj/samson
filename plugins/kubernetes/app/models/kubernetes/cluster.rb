@@ -10,8 +10,6 @@ module Kubernetes
     attr_encrypted :client_cert
     attr_encrypted :client_key
 
-    IP_PREFIX_PATTERN = /\A(?:[\d]{1,3}\.){0,2}[\d]{1,3}\z/.freeze # also used in js
-
     has_many :cluster_deploy_groups,
       class_name: 'Kubernetes::ClusterDeployGroup',
       foreign_key: :kubernetes_cluster_id,
@@ -19,8 +17,7 @@ module Kubernetes
       inverse_of: :cluster
     has_many :deploy_groups, through: :cluster_deploy_groups, inverse_of: :kubernetes_cluster
 
-    validates :name, presence: true, uniqueness: true
-    validates :ip_prefix, format: IP_PREFIX_PATTERN, allow_blank: true
+    validates :name, presence: true, uniqueness: {case_sensitive: false}
     validate :test_client_connection
 
     before_destroy :ensure_unused
@@ -44,7 +41,12 @@ module Kubernetes
         else raise "Unsupported auth method #{auth_method}"
         end
 
-        endpoint += '/apis' unless type.match? /^v\d+/ # TODO: remove by fixing via https://github.com/abonas/kubeclient/issues/284
+        # TODO: remove by fixing via https://github.com/abonas/kubeclient/issues/284
+        path, version_number = type.scan(/(.*)\/(\S+)$/).first
+        if path
+          endpoint += "/apis/#{path}"
+          type = version_number
+        end
 
         Kubeclient::Client.new(
           endpoint,
@@ -78,10 +80,17 @@ module Kubernetes
     def server_version
       version = Rails.cache.fetch(cache_key, expires_in: 1.hour) do
         Samson::Retry.with_retries [StandardError], 3, wait_time: 1 do
-          JSON.parse(client('v1').create_rest_client('version').get.body).fetch('gitVersion')[1..-1]
+          JSON.parse(client('v1').create_rest_client('version').get.body).fetch('gitVersion')[1..]
         end
       end
       Gem::Version.new(version)
+    end
+
+    # Externally used by the kubernetes connectivity smoke tests
+    def connection_valid?
+      client('v1').api_valid?
+    rescue StandardError
+      false
     end
 
     private
@@ -96,12 +105,6 @@ module Kubernetes
 
     def kubeconfig
       @kubeconfig ||= Kubeclient::Config.read(config_filepath)
-    end
-
-    def connection_valid?
-      client('v1').api_valid?
-    rescue StandardError
-      false
     end
 
     def test_client_connection

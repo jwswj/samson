@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+
 class AccessTokensController < ResourceController
   before_action :set_resource, except: [:index]
 
@@ -7,7 +8,7 @@ class AccessTokensController < ResourceController
   def owner
     @owner ||= begin
       id = params[:doorkeeper_access_token]&.delete(:resource_owner_id).presence || current_user.id
-      token = current_user.access_tokens.new(resource_owner_id: id)
+      token = current_user.access_tokens.new { |t| t.resource_owner_id = id }
       if can? :write, :access_tokens, token
         User.find(id)
       else
@@ -23,7 +24,10 @@ class AccessTokensController < ResourceController
   def redirect_after_save
     redirect_to(
       redirect_to_from_params,
-      notice: "Token created: copy this token, it will not be shown again: <b>#{@resource.token}</b>".html_safe
+      notice: <<~HTML.html_safe
+        Token created: copy this token, it will not be shown again: <b>#{@resource.token}</b><br/>
+        Use with 'Authorization: Bearer #{@resource.token}' header.
+      HTML
     )
   end
 

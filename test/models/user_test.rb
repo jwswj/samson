@@ -60,7 +60,7 @@ describe User do
     end
 
     it "does update with valid values" do
-      user.update_attributes!(time_format: 'utc')
+      user.update!(time_format: 'utc')
       user.reload
       user.time_format.must_equal('utc')
     end
@@ -299,7 +299,7 @@ describe User do
   describe 'soft delete!' do
     let(:user) { User.create!(name: 'to_delete', email: 'to_delete@test.com', external_id: 'xyz') }
     let!(:locks) do
-      %i[test_staging test_production].map { |stage| user.locks.create!(resource: stages(stage)) }
+      [:test_staging, :test_production].map { |stage| user.locks.create!(resource: stages(stage)) }
     end
 
     it 'soft deletes all the user locks when the user is soft deleted' do
@@ -395,12 +395,12 @@ describe User do
     let(:user) { users(:admin) }
 
     it "tracks important changes" do
-      user.update_attributes!(name: "Foo")
+      user.update!(name: "Foo")
       user.audits.size.must_equal 1
     end
 
     it "ignores unimportant changes" do
-      user.update_attributes!(updated_at: 1.second.from_now, last_login_at: Time.now)
+      user.update!(updated_at: 1.second.from_now, last_login_at: Time.now)
       user.audits.size.must_equal 0
     end
 

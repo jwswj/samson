@@ -40,19 +40,6 @@ describe Lock do
       end
     end
 
-    describe "#unique_global_lock" do
-      before { Lock.create!(user: user) }
-
-      it "is invalid with another global lock" do
-        refute_valid lock
-      end
-
-      it "is valid when scoped" do
-        lock.resource = stage
-        assert_valid lock
-      end
-    end
-
     describe "#nil_out_blank_resource_type" do
       it "nils blank resource_type" do
         lock.resource_type = ''
@@ -264,7 +251,7 @@ describe Lock do
       lock # trigger create
 
       Lock.send(:all_cached).must_equal [lock]
-      lock.update_attributes(warning: false)
+      lock.update(warning: false)
       assert_sql_queries 1 do
         Lock.send(:all_cached).must_equal [lock]
       end

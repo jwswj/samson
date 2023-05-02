@@ -47,7 +47,7 @@ describe ProjectsController do
         end
 
         it "can combine query and url" do
-          get :index, params: {search: {query: "foo", url: "git@example.com:bar/foo.git"}}
+          get :index, params: {search: {query: "foo", url: "git@github.com:bar/foo.git"}}
           assigns(:projects).map(&:name).must_equal ["Foo"]
         end
 
@@ -66,7 +66,7 @@ describe ProjectsController do
           end
 
           it "renders with ssh in url" do
-            validate_search_url("ssh://git@example.com:bar/foo.git", ["Foo"])
+            validate_search_url("ssh://git@github.com:bar/foo.git", ["Foo"])
           end
 
           it "renders without .git in url" do
@@ -74,7 +74,7 @@ describe ProjectsController do
           end
 
           it "renders without .git and with @git in url" do
-            validate_search_url("git@example.com/bar/foo", ["Foo"])
+            validate_search_url("git@github.com/bar/foo", ["Foo"])
           end
 
           it "does not find when url does not match" do
@@ -111,7 +111,7 @@ describe ProjectsController do
         all_projects = Project.order(:id).to_a
 
         csv.each_with_index do |row, idx|
-          %w[Id Name Url].each do |attr|
+          ['Id', 'Name', 'Url'].each do |attr|
             row.headers.must_include attr
           end
           row['Id'].must_equal all_projects[idx].id.to_s
@@ -140,11 +140,33 @@ describe ProjectsController do
           assert_response :success
         end
 
+        it "does not N+1" do
+          with_caching do
+            get :show, params: {id: project.to_param} # fill cache
+            assert_nplus1_queries 2 do
+              get :show, params: {id: project.to_param}
+            end
+          end
+        end
+
         it "does not find soft deleted" do
           project.soft_delete!(validate: false)
           assert_raises ActiveRecord::RecordNotFound do
             get :show, params: {id: project.to_param}
           end
+        end
+
+        it "can filter by name" do
+          get :show, params: {id: project.to_param, search: {name: "oduction"}}
+          assert_response :success
+          assigns[:stages].map(&:name).must_equal ["Production", "Production Pod"]
+        end
+
+        it "can filter by failed" do
+          deploys(:succeeded_test).destroy # only leave the failed deploy
+          get :show, params: {id: project.to_param, search: {failed: "true"}}
+          assert_response :success
+          assigns[:stages].map(&:name).must_equal ["Staging"]
         end
       end
 
@@ -173,6 +195,24 @@ describe ProjectsController do
           assert_response :success
           project = JSON.parse(response.body)
           project.keys.must_include "environment_variables_with_scope"
+        end
+
+        it "renders with external_environment_variable_groups if requested" do
+          with_env EXTERNAL_ENV_GROUP_S3_REGION: "us-east-1", EXTERNAL_ENV_GROUP_S3_BUCKET: "a-bucket" do
+            get :show, params: {id: project.to_param, includes: "external_environment_variable_groups", format: :json}
+            assert_response :success
+            project = JSON.parse(response.body)
+            project.keys.must_include "external_environment_variable_groups"
+          end
+        end
+
+        it "renders locks if requested" do
+          Lock.create!(user: user, resource: project)
+          get :show, params: {id: project.to_param, includes: "lock", format: :json}
+          assert_response :success
+          project = JSON.parse(response.body)
+          project.keys.must_include "locks"
+          refute_empty project['locks']
         end
       end
     end

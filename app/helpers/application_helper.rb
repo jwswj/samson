@@ -1,9 +1,14 @@
 # frozen_string_literal: true
 require 'ansible'
-require 'github/markdown'
+require 'commonmarker'
 
 module ApplicationHelper
-  BOOTSTRAP_FLASH_MAPPINGS = {notice: :info, alert: :danger, authorization_error: :danger, success: :success}.freeze
+  BOOTSTRAP_FLASH_MAPPINGS = {
+    notice: :info, # rails default
+    alert: :danger, # rails default
+    warn: :warning, # extra variety for us
+    application_secret: :info, # doorkeeper gem
+  }.freeze
   BOOTSTRAP_TOOLTIP_PROPS = {toggle: 'popover', placement: 'right', trigger: 'hover'}.freeze
 
   include Ansible
@@ -20,9 +25,14 @@ module ApplicationHelper
     text.gsub(%r{https?://[\w:@./\d#?&=-]+}, %(<a href="\\0">\\0</a>))
   end
 
-  # https://github.com/showdownjs/showdown/wiki/Markdown's-XSS-Vulnerability-(and-how-to-mitigate-it)
+  # need sanitize for https://github.com/showdownjs/showdown/wiki/Markdown's-XSS-Vulnerability-(and-how-to-mitigate-it)
+  # options: https://github.com/gjtorikian/commonmarker#extensions
   def markdown(str)
-    sanitize GitHub::Markdown.render_gfm(str)
+    sanitize CommonMarker.render_html(
+      str.to_s,
+      [:STRIKETHROUGH_DOUBLE_TILDE, :LIBERAL_HTML_TAG, :UNSAFE],
+      [:strikethrough, :tasklist, :autolink, :table]
+    )
   end
 
   def deploy_link(project, stage)
@@ -71,17 +81,19 @@ module ApplicationHelper
   end
 
   # tested via link_to_resource
-  def link_parts_for_resource(resource)
+  def link_parts_for_resource(resource, with_locks: true)
     case resource
-    when Project, DeployGroup, Environment, User, Samson::Secrets::VaultServer then [resource.name, resource]
+    when DeployGroup, User, Samson::Secrets::VaultServer then [resource.name, resource]
+    when Environment then ["Environment #{resource.name}", resource]
     when Command then ["Command ##{resource.id}", resource]
     when UserProjectRole then ["Role for ##{resource.user.name}", resource.user]
-    when Stage then
+    when Project, Stage
       name = resource.name
-      name = (resource.lock.warning? ? warning_icon : lock_icon) + " " + name if resource.lock
-      [name, [resource.project, resource]]
+      name = (resource.lock.warning? ? warning_icon : lock_icon) + " " + name if with_locks && resource.lock
+      [name, resource.is_a?(Project) ? resource : [resource.project, resource]]
     when Deploy then ["Deploy ##{resource.id}", [resource.project, resource]]
     when SecretSharingGrant then [resource.key, resource]
+    when OutboundWebhook then [resource.url, resource]
     else
       @@link_parts_for_resource ||= Samson::Hooks.fire(:link_parts_for_resource).to_h
       proc = @@link_parts_for_resource[resource.class.name] ||
@@ -90,8 +102,8 @@ module ApplicationHelper
     end
   end
 
-  def link_to_resource(resource)
-    name, path = link_parts_for_resource(resource)
+  def link_to_resource(resource, with_locks: true)
+    name, path = link_parts_for_resource(resource, with_locks: with_locks)
     if Array(path).any?(&:nil?)
       name
     else
@@ -100,7 +112,9 @@ module ApplicationHelper
   end
 
   def manual_breadcrumb(items)
-    items.unshift ["Home", root_path]
+    home_text = "Home"
+    home_text = (global_locks.all?(&:warning?) ? warning_icon : lock_icon) + " " + home_text if global_locks.present?
+    items.unshift [home_text, root_path]
     items.last << true # mark last as active
 
     content_tag :ul, class: "breadcrumb" do
@@ -135,7 +149,8 @@ module ApplicationHelper
   end
 
   def link_to_delete(
-    path, text: 'Delete', question: nil, type_to_delete: false, remove_container: false, disabled: false, **options
+    path, text: 'Delete', question: nil, type_to_delete: false, remove_container: false, disabled: false,
+    redirect_back: false, **options
   )
     if disabled
       content_tag :span, text, title: disabled, class: 'mouseover'
@@ -146,11 +161,11 @@ module ApplicationHelper
         elsif path.is_a?(ActiveRecord::Base)
           resource = path
           name, path = link_parts_for_resource(resource)
-          "Delete #{resource.class.name.split("::").last} #{name} ?"
+          "Delete #{resource.class.name.split("::").last} #{strip_tags(name).strip}?"
         elsif (resource = Array(path).last) && resource.is_a?(ActiveRecord::Base)
-          "Delete this #{resource.class.name.split("::").last} ?"
+          "Delete this #{resource.class.name.split("::").last}?"
         else
-          "Really delete ?"
+          "Really delete?"
         end
       options[:data] = {method: :delete}
       if type_to_delete
@@ -163,19 +178,17 @@ module ApplicationHelper
         options[:data][:remote] = true
         options[:class] = "remove_container"
       end
+      if redirect_back && location = params[:redirect_to].presence
+        path = add_to_url(url_for(path), {redirect_to: location}.to_query)
+      end
       link_to text, path, options
     end
   end
 
-  # Flash type -> Bootstrap alert class
-  def flash_messages
-    flash.flat_map do |type, messages|
-      type = type.to_sym
-      bootstrap_class = BOOTSTRAP_FLASH_MAPPINGS.fetch(type)
-      Array.wrap(messages).map do |message|
-        [type, bootstrap_class, message]
-      end
-    end
+  # @param [String] url
+  # @param [String] add
+  def add_to_url(url, add)
+    url.include?("?") ? "#{url}&#{add}" : "#{url}?#{add}"
   end
 
   def link_to_url(url)
@@ -188,11 +201,11 @@ module ApplicationHelper
     return "" if object.errors.empty?
 
     content_tag :ul do
-      lis = object.errors.map do |attribute, message|
+      lis = object.errors.map do |error|
         content_tag(:li) do
           content = "".html_safe
-          content << object.errors.full_message(attribute, message)
-          values = (object.respond_to?(attribute) ? Array.wrap(object.send(attribute)) : [])
+          content << object.errors.full_message(error.attribute, error.message)
+          values = (object.respond_to?(error.attribute) ? Array.wrap(object.send(error.attribute)) : [])
           if values.first.is_a?(ActiveRecord::Base)
             values.each do |value|
               content << render_nested_errors(value, seen)
@@ -235,7 +248,7 @@ module ApplicationHelper
   # keep values short, urls would be ignored ... see application_controller.rb#redirect_back
   # also failing fast here for easy debugging instead of sending invalid urls around
   def redirect_to_field
-    return unless location = params[:redirect_to].presence || request.referrer.to_s.dup.sub!(root_url, '/')
+    return unless location = params[:redirect_to].presence || request.referer.to_s.dup.sub!(root_url, '/')
     hidden_field_tag :redirect_to, location
   end
 
@@ -246,9 +259,9 @@ module ApplicationHelper
     end
   end
 
-  def search_form(options = {}, &block)
+  def search_form(top_pad: true, **options, &block)
     form_tag '?', options.merge(method: :get, class: "clearfix") do
-      button = submit_tag("Search", class: "btn btn-default form-control", style: "margin-top: 25px")
+      button = submit_tag("Search", class: "btn btn-default form-control", style: ("margin-top: 25px" if top_pad))
       capture(&block) << content_tag(:div, button, class: "col-md-1 clearfix")
     end
   end
@@ -271,23 +284,23 @@ module ApplicationHelper
 
   def paginate(pagy)
     multi_page = pagy.pages > 1
-    result = (multi_page ? pagy_nav_bootstrap(pagy) : "").html_safe
+    result = (multi_page ? pagy_bootstrap_nav(pagy) : "").html_safe
     if multi_page
       result << content_tag(:span, " #{pagy.count} records", style: "padding: 10px")
     end
     result
   end
 
-  def unordered_list(items, display_limit: nil, show_more_tag: nil, ul_options: {}, li_options: {}, &block)
-    shown_items = items.first(display_limit || items.size)
+  # render and unordered list with limited items
+  def unordered_list(items, display_limit:, show_more_tag: nil, ul_options: {}, li_options: {}, &block)
+    shown_items = items.first(display_limit)
     li_tags = shown_items.map { |item| content_tag(:li, nil, li_options) { capture(item, &block) } }
-    li_tags << show_more_tag if display_limit && items.size > display_limit
-
+    li_tags << show_more_tag if items.size > display_limit
     content_tag(:ul, safe_join(li_tags), ul_options)
   end
 
   # See https://developers.google.com/chart/image/docs/chart_params
-  def link_to_chart(name, values)
+  def link_to_chart(name, values, title:)
     return if values.size < 3
 
     max = values.max.round
@@ -295,55 +308,68 @@ module ApplicationHelper
     y_values = values.reverse.map { |v| max == 0 ? max : (v * 100.0 / max).round }.join(",") # values as % of max
     params = {
       cht: "lc", # chart type
-      chtt: name,
+      chtt: title,
       chd: "t:#{y_values}", # data
       chxt: "y", # axis to draw
       chxl: "0:|#{y_axis}", # axis labels
       chs: "1000x200", # size
     }
     url = "https://chart.googleapis.com/chart?#{params.to_query}"
-    link_to icon_tag('signal'), url, target: :blank
+    link_to name, url, target: :blank
   end
 
   # show which stages this reference is deploy(ed+ing) to
   def deployed_or_running_list(stages, reference)
-    html = "".html_safe
-    stages.each do |stage|
+    deploys = stages.map do |stage|
       next unless deploy = stage.deployed_or_running_deploy
       next unless deploy.references?(reference)
+      [stage, deploy]
+    end.compact
+
+    stage_deploy_labels(deploys)
+  end
+
+  # show which stages this build is deploy(ed+ing) to
+  def deployed_or_running_builds(stages, build)
+    deploys = stages.map do |stage|
+      next unless deploy = stage.deployed_or_running_deploy
+      next unless deploy.builds.include?(build)
+      [stage, deploy]
+    end.compact
+
+    stage_deploy_labels(deploys)
+  end
+
+  def stage_deploy_labels(deploy_map)
+    html = "".html_safe
+    deploy_map.each do |stage, deploy|
       label = (deploy.active? ? "label-warning" : "label-success")
 
       text = "".html_safe
       text << stage.name
-      html << content_tag(:span, text, class: "label #{label} release-stage")
+      html << link_to([@project || deploy.project, deploy]) do
+        content_tag(:span, text, class: "label #{label} release-stage")
+      end
       html << " "
     end
     html
   end
 
   def github_user_avatar(github_user)
-    image_tag github_user.avatar_url,
+    image_tag(
+      github_user.avatar_url,
       title: github_user.login,
       class: "gravatar github-user-avatar",
       width: 20,
       height: 20,
       'data-toggle': "tooltip"
+    )
   end
 
-  def check_box_section(section_title, help_text, object, method, collection)
-    content_tag(:fieldset) do
-      result = ''.html_safe
-
-      result << content_tag(:legend, section_title)
-      result << content_tag(:p, help_text, class: 'col-lg-offset-2')
-      result << content_tag(:div, class: 'col-lg-4 col-lg-offset-2') do
-        check_boxes = ''.html_safe
-        check_boxes << collection_check_boxes(object, method, collection, :id, :name) do |b|
-          box = ''.html_safe
-          box << b.check_box + ' '
-          box << b.label
-          box << tag(:br)
-        end
+  def render_collection_check_boxes(object, method, collection)
+    content_tag(:div, class: 'col-lg-4 col-lg-offset-2') do
+      collection_check_boxes(object, method, collection, :id, :name) do |b|
+        b.check_box << ' ' << b.label << tag(:br)
       end
     end
   end

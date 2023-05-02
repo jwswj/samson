@@ -2,7 +2,7 @@
 
 ## Server setup
 
-### Docker
+### Option A: Docker
 
 Simple/reproducible but slow to develop on.
 
@@ -16,21 +16,21 @@ When running on virtual the `3000` port forwarding should be configured in virtu
 When running on virtual `192.168.42.45` use `.env.virtualbox` from `docker-compose.yml`.
 When running on neither localhost nor `192.168.42.45` create your own credentials and load them from `docker-compose.yml`.
 
-### Local machine
+### Option B: Local machine
 
 Complicated to start, but easy to develop from.
 
 ```bash
 # install the database you want to use, samson needs mysql, postgresql, or sqlite
 sudo apt-get install mysql-dev pg-dev nodejs
-brew install postgresql sqlite mysql
+brew install postgresql sqlite mysql nodejs
 
 bin/setup # Run the setup script to use the test credentials.
 ./bin/rails s
 open http://localhost:3000
 ```
 
-### Heroku
+### Option C: Heroku
 
 Simple setup, no dependencies, but slow to develop.
 
@@ -66,7 +66,7 @@ To restart the server use `kill -USR1 <pid>` which makes it restart without losi
 ### Environment variables
 
 Set environment variables in your `.env` file, see `.env.example` for documentation on what is required/available.
-Alternatively set them directly in heroku or the process environment. 
+Alternatively set them directly in heroku or the process environment.
 
 ### Advanced features
 

@@ -10,7 +10,7 @@ describe ReleaseService do
   describe "#release" do
     def assert_failed_ref_find(count)
       GITHUB.unstub(:release_for_tag)
-      project.repository.expects(:commit_from_ref).times(count).returns(nil)
+      project.expects(:repo_commit_from_ref).times(count).returns(nil)
       Samson::Retry.expects(:sleep).times(count - 1)
       assert_raises RuntimeError do
         service.release(commit: commit, author: author)
@@ -23,8 +23,7 @@ describe ReleaseService do
 
     before do
       GITHUB.stubs(:create_release).capture(release_params_used)
-      project.repository.stubs(:commit_from_ref).returns("abc")
-      project.repository.stubs(:commit_from_ref).returns("abc")
+      project.stubs(:repo_commit_from_ref).returns("abc")
       GitRepository.any_instance.expects(:fuzzy_tag_from_ref).returns(nil)
     end
 
@@ -44,7 +43,7 @@ describe ReleaseService do
 
     it "tags the release" do
       service.release(commit: commit, author: author)
-      assert_equal [[project.repository_path, 'v124', target_commitish: commit]], release_params_used
+      assert_equal [[project.repository_path, 'v124', {target_commitish: commit}]], release_params_used
     end
 
     it "stops when release cannot be found" do
@@ -58,14 +57,32 @@ describe ReleaseService do
     end
 
     it "deploys the commit to stages if they're configured to" do
-      stage = project.stages.create!(name: "production", deploy_on_release: true)
+      stage = project.stages.create!(name: "release", deploy_on_release: true)
       release = service.release(commit: commit, author: author)
 
       assert_equal release.version, stage.deploys.first.reference
     end
 
+    it "ignores existing github releases" do
+      GITHUB.unstub(:create_release)
+      GITHUB.stubs(:create_release).
+        raises(Octokit::UnprocessableEntity.new(body: "code: already_exists"))
+      assert_difference "Release.count", +1 do
+        service.release(commit: commit, author: author)
+      end
+    end
+
+    it "does not ignore github release error" do
+      GITHUB.unstub(:create_release)
+      GITHUB.stubs(:create_release).
+        raises(Octokit::UnprocessableEntity.new({}))
+      assert_raises Octokit::UnprocessableEntity do
+        service.release(commit: commit, author: author)
+      end
+    end
+
     context 'with release_deploy_conditions hook' do
-      let!(:stage) { project.stages.create!(name: "production", deploy_on_release: true) }
+      let!(:stage) { project.stages.create!(name: "release", deploy_on_release: true) }
 
       it 'does not deploy if the release_deploy_condition check is false' do
         deployable_condition_check = ->(_, _) { false }

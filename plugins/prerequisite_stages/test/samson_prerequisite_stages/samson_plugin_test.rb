@@ -4,26 +4,32 @@ require_relative '../test_helper'
 
 SingleCov.covered!
 
-describe SamsonPrerequisiteStages do
+describe "SamsonPrerequisiteStages Helper" do
   let(:stage1) { stages(:test_staging) }
   let(:stage2) { stages(:test_production) }
   let(:deploy) { stage1.deploys.first }
+  let(:staging_commit) { "0000000000000000000000000000000000000002" }
+  let(:production_commit) { "0000000000000000000000000000000000000001" }
 
   before do
-    stage1.update_attributes!(prerequisite_stage_ids: [stage2.id])
+    stage1.update!(prerequisite_stage_ids: [stage2.id])
+    deploy.project.stubs(:repo_commit_from_ref).with(stage1.deploys.first.reference).returns(staging_commit)
+    deploy.project.stubs(:repo_commit_from_ref).with(stage2.deploys.first.reference).returns(production_commit)
   end
 
-  describe SamsonPrerequisiteStages::Engine do
+  describe SamsonPrerequisiteStages::SamsonPlugin do
     describe '.validate_deployed_to_all_prerequisite_stages' do
       it 'shows unmet prerequisite stages' do
-        stage1.expects(:undeployed_prerequisite_stages).with(deploy.reference).returns([stage2])
-        error = SamsonPrerequisiteStages.validate_deployed_to_all_prerequisite_stages(stage1, deploy.reference)
+        stage1.expects(:undeployed_prerequisite_stages).with(staging_commit).returns([stage2])
+        error = SamsonPrerequisiteStages.
+          validate_deployed_to_all_prerequisite_stages(stage1, deploy.reference, staging_commit)
         error.must_equal "Reference 'staging' has not been deployed to these prerequisite stages: Production."
       end
 
       it 'is silent when there are no unmet prerequisites' do
-        stage1.expects(:undeployed_prerequisite_stages).with(deploy.reference).returns([])
-        SamsonPrerequisiteStages.validate_deployed_to_all_prerequisite_stages(stage1, deploy.reference).must_be_nil
+        stage1.expects(:undeployed_prerequisite_stages).with(staging_commit).returns([])
+        SamsonPrerequisiteStages.
+          validate_deployed_to_all_prerequisite_stages(stage1, deploy.reference, staging_commit).must_be_nil
       end
     end
   end
@@ -33,7 +39,7 @@ describe SamsonPrerequisiteStages do
       only_callbacks_for_plugin :before_deploy
 
       it 'raises if a prerequisite stage has not been deployed for ref' do
-        stage1.expects(:undeployed_prerequisite_stages).with(deploy.reference).returns([stage2])
+        stage1.expects(:undeployed_prerequisite_stages).with(staging_commit).returns([stage2])
 
         error_message = "Reference 'staging' has not been deployed to these prerequisite stages: Production."
         error = assert_raises RuntimeError do
@@ -43,8 +49,13 @@ describe SamsonPrerequisiteStages do
       end
 
       it 'does not raise if ref has not been deployed' do
-        stage1.expects(:undeployed_prerequisite_stages).with(deploy.reference).returns([])
+        stage1.expects(:undeployed_prerequisite_stages).with(staging_commit).returns([])
 
+        Samson::Hooks.fire(:before_deploy, deploy, nil)
+      end
+
+      it 'does not raise if there are no prerequisite stages' do
+        stage1.update!(prerequisite_stage_ids: [])
         Samson::Hooks.fire(:before_deploy, deploy, nil)
       end
     end
@@ -53,7 +64,7 @@ describe SamsonPrerequisiteStages do
       only_callbacks_for_plugin :ref_status
 
       it 'returns status if stage does not meet prerequisites' do
-        stage1.expects(:undeployed_prerequisite_stages).with(deploy.reference).returns([stage2])
+        stage1.expects(:undeployed_prerequisite_stages).with(staging_commit).returns([stage2])
 
         error_message = "Reference 'staging' has not been deployed to these prerequisite stages: Production."
         expected = {
@@ -64,12 +75,12 @@ describe SamsonPrerequisiteStages do
           }]
         }
 
-        Samson::Hooks.fire(:ref_status, stage1, deploy.reference).must_include expected
+        Samson::Hooks.fire(:ref_status, stage1, deploy.reference, staging_commit).must_include expected
       end
 
       it 'returns nil if stage meets prerequisites' do
-        stage1.expects(:undeployed_prerequisite_stages).with(deploy.reference).returns([])
-        Samson::Hooks.fire(:ref_status, stage1, deploy.reference).must_equal [nil]
+        stage1.expects(:undeployed_prerequisite_stages).with(staging_commit).returns([])
+        Samson::Hooks.fire(:ref_status, stage1, deploy.reference, staging_commit).must_equal [nil]
       end
     end
 
@@ -82,37 +93,18 @@ describe SamsonPrerequisiteStages do
 
   describe 'view callbacks' do
     before do
-      view_context.instance_variable_set(:@project, stage1.project)
-      view_context.instance_variable_set(:@stage, stage1)
-    end
-
-    let(:view_context) do
-      view_context = ActionView::Base.new(ActionController::Base.view_paths)
-
-      class << view_context
-        include Rails.application.routes.url_helpers
-        include ApplicationHelper
-      end
-
-      view_context.instance_eval do
-        # stub for testing render
-        def protect_against_forgery?
-        end
-      end
-
-      view_context
+      @project = stage1.project
+      @stage = stage1
     end
 
     describe 'stage_form callback' do
-      def with_form
-        view_context.form_for [stage1.project, stage1] do |form|
-          yield form
-        end
+      def with_form(&block)
+        form_for [stage1.project, stage1], &block
       end
 
       def render_view
         with_form do |form|
-          Samson::Hooks.render_views(:stage_form, view_context, form: form)
+          Samson::Hooks.render_views(:stage_form, self, form: form)
         end
       end
 
@@ -126,17 +118,17 @@ describe SamsonPrerequisiteStages do
 
     describe 'stage_show callback' do
       def render_view
-        Samson::Hooks.render_views(:stage_show, view_context)
+        Samson::Hooks.render_views(:stage_show, self)
       end
 
       it 'shows prerequisite stages' do
         result = render_view
         result.must_include '<h2>Prerequisite Stages</h2>'
-        result.must_match /<li>\n.*href="\/projects\/foo\/stages\/production"/
+        result.must_match /<li>.*href="\/projects\/foo\/stages\/production"/
       end
 
       it 'shows nothing if no prerequisite stages exist' do
-        stage1.update_attributes!(prerequisite_stage_ids: [])
+        stage1.update!(prerequisite_stage_ids: [])
         result = render_view
         result.must_equal "\n"
       end

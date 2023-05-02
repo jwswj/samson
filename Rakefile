@@ -38,11 +38,7 @@ end
 task :asset_compilation_environment do
   ENV['SECRET_TOKEN'] = 'foo'
   ENV['GITHUB_TOKEN'] = 'foo'
-
-  config = Rails.application.config
-  def config.database_configuration
-    {}
-  end
+  ENV['DATABASE_URL'] = 'do-not-use-db'
 
   ar = ActiveRecord::Base
   def ar.establish_connection
@@ -50,17 +46,8 @@ task :asset_compilation_environment do
 end
 Rake::Task['assets:precompile'].prerequisites.unshift :asset_compilation_environment
 
-# normalize schema after dumping so we do not have a diff
-# tested via test/integration/tasks_test.rb
-task "db:schema:dump" do
-  file = "db/schema.rb"
-  schema = File.read(file)
-  schema.gsub!(/, options: .* do/, " do")
-  schema.gsub!('t.text "output", limit: 4294967295', 't.text "output", limit: 268435455')
-  schema.gsub!('t.text "audited_changes", limit: 4294967295', 't.text "audited_changes", limit: 1073741823')
-  schema.gsub!('t.text "object", limit: 4294967295', 't.text "object", limit: 1073741823')
-  File.write(file, schema)
-end
+# we don't use yarn but rails wants to use it and it blows up
+Rake::Task['yarn:install'].clear
 
 namespace :test do
   task migrate_without_plugins: :environment do
@@ -89,7 +76,8 @@ end
 desc 'Scan for gem vulnerabilities'
 task :bundle_audit do
   # TODO: remove CVE-2015-9284 once https://github.com/omniauth/omniauth/pull/809 is resolved
-  sh "bundle-audit check --update --ignore CVE-2015-9284"
+  # TODO: remove CVE-2022-0759 once local development works on newer version
+  sh "bundle-audit check --update --ignore CVE-2015-9284 CVE-2022-0759"
 end
 
 desc "Run rubocop"
@@ -110,7 +98,7 @@ task :flay do
 
   files = Dir["{config,lib,app,plugins/*/{config,lib,app}}/**/*.{rb,erb}"]
   files -= [
-    'plugins/slack_app/app/models/slack_message.rb', # cannot depend on other plugin ... maybe extract
+    'plugins/slack_app/app/models/samson_slack_app/slack_message.rb', # cannot depend on other plugin ... maybe extract
     'app/views/admin/secrets/index.html.erb', # search box
     'plugins/slack_webhooks/app/views/samson_slack_webhooks/_fields.html.erb', # cannot reuse form.input
     'plugins/pipelines/app/views/samson_pipelines/_stage_show.html.erb', # super simple html

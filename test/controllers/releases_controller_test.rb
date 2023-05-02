@@ -35,25 +35,13 @@ describe ReleasesController do
       ]
     }
 
-    headers = {
-      "Content-Type" => "application/json",
-    }
-    preview_headers = {
-      'Accept' => 'application/vnd.github.antiope-preview+json'
-    }
-
-    stub_request(:get, "https://api.github.com/repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd/status").
-      to_return(status: 200, body: status_response.to_json, headers: headers)
-
-    stub_request(
-      :get,
-      "https://api.github.com/repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd/check-suites"
-    ).to_return(status: 200, body: check_suite_response.to_json, headers: headers.merge(preview_headers))
-
-    stub_request(
-      :get,
-      "https://api.github.com/repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd/check-runs"
-    ).to_return(status: 200, body: check_run_response.to_json, headers: headers.merge(preview_headers))
+    stub_github_api(
+      "repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
+      sha: "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"
+    )
+    stub_github_api "repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd/status", status_response
+    stub_github_api "repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd/check-suites", check_suite_response
+    stub_github_api "repos/bar/foo/commits/abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd/check-runs", check_run_response
   end
 
   as_a :viewer do
@@ -96,13 +84,13 @@ describe ReleasesController do
     describe "#create" do
       let(:release_params) { {commit: "abcd"} }
       before do
-        GitRepository.any_instance.expects(:commit_from_ref).with('abcd').returns('a' * 40)
+        GITHUB.expects(:commit).with("bar/foo", "abcd").returns(stub(sha: 'a' * 40))
         GITHUB.stubs(:create_release)
       end
 
       it "creates a new release" do
         GitRepository.any_instance.expects(:fuzzy_tag_from_ref).with('abcd').returns("v2")
-        GitRepository.any_instance.expects(:commit_from_ref).with('v124').returns('a' * 40)
+        GITHUB.expects(:commit).with("bar/foo", "v124").returns(stub(sha: 'a' * 40))
 
         assert_difference "Release.count", +1 do
           post :create, params: {project_id: project.to_param, release: release_params}

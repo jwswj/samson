@@ -21,7 +21,7 @@ describe CsvExportJob do
 
   it "cleans up old jobs" do
     old = CsvExport.create!(user: deployer, filters: {})
-    old.update_attributes(created_at: Time.now - 1.year, updated_at: Time.now - 1.year)
+    old.update(created_at: Time.now - 1.year, updated_at: Time.now - 1.year)
     old_id = old.id
 
     CsvExportJob.new(deploy_export).perform
@@ -61,7 +61,7 @@ describe CsvExportJob do
 
       it "filters the report with known production activity completely" do
         filter = {
-          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse(Date.today.to_s + "T23:59:59Z")),
+          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse("#{Date.today}T23:59:59Z")),
           'environments.production': true, 'jobs.status': 'succeeded', 'stages.project_id': project.id
         }
         completeness_test(filter, 1)
@@ -69,7 +69,7 @@ describe CsvExportJob do
 
       it "filters the report with known non-production activity completely" do
         filter = {
-          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse(Date.today.to_s + "T23:59:59Z")),
+          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse("#{Date.today}T23:59:59Z")),
           'environments.production': false, 'jobs.status': 'succeeded', 'stages.project_id': project.id
         }
         completeness_test(filter, 1)
@@ -84,7 +84,7 @@ describe CsvExportJob do
 
       it "filters the report with known production activity completely" do
         filter = {
-          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse(Date.today.to_s + "T23:59:59Z")),
+          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse("#{Date.today}T23:59:59Z")),
           'environments.production': true, 'jobs.status': 'succeeded', 'stages.project_id': project.id
         }
         completeness_test(filter, 1)
@@ -92,7 +92,7 @@ describe CsvExportJob do
 
       it "filters the report with known non-production activity completely" do
         filter = {
-          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse(Date.today.to_s + "T23:59:59Z")),
+          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse("#{Date.today}T23:59:59Z")),
           'environments.production': false, 'jobs.status': 'succeeded', 'stages.project_id': project.id
         }
         completeness_test(filter, 1)
@@ -106,7 +106,7 @@ describe CsvExportJob do
 
       it "filters the report with known production activity completely" do
         filter = {
-          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse(Date.today.to_s + "T23:59:59Z")),
+          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse("#{Date.today}T23:59:59Z")),
           'stages.production': true, 'jobs.status': 'succeeded', 'stages.project_id': project.id
         }
         completeness_test(filter, 1)
@@ -114,14 +114,14 @@ describe CsvExportJob do
 
       it "filters the report with known non-production activity completely" do
         filter = {
-          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse(Date.today.to_s + "T23:59:59Z")),
+          'deploys.created_at': (Time.new(1900, 1, 1)..Time.parse("#{Date.today}T23:59:59Z")),
           'stages.production': false, 'jobs.status': 'succeeded', 'stages.project_id': project.id
         }
         completeness_test(filter, 1)
       end
 
       it "has no results for date range after deploys" do
-        filter = {'deploys.created_at': (Time.new(2015, 12, 31)..Time.parse(Date.today.to_s + "T23:59:59Z"))}
+        filter = {'deploys.created_at': (Time.new(2015, 12, 31)..Time.parse("#{Date.today}T23:59:59Z"))}
         completeness_test(filter, 0)
       end
 

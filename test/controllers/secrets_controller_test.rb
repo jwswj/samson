@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 require_relative '../test_helper'
+require 'samson/secrets/hashicorp_vault_backend'
 
 SingleCov.covered!
 
@@ -37,6 +38,8 @@ describe SecretsController do
     unauthorized :post, :revert, id: 'production/foo/group/bar'
     unauthorized :patch, :update, id: 'production/foo/group/bar'
     unauthorized :delete, :destroy, id: 'production/foo/group/bar'
+    unauthorized :get, :resolve
+    unauthorized :post, :resolve
   end
 
   as_a :project_deployer do
@@ -109,9 +112,15 @@ describe SecretsController do
       end
 
       it 'raises when vault server is broken' do
-        Samson::Secrets::Manager.expects(:lookup_cache).raises(Samson::Secrets::BackendError.new('this is my error'))
+        Samson::Secrets::Manager.expects(:lookup_cache).
+          raises(Samson::Secrets::BackendError.new('this is my error'))
         get :index
         assert flash[:alert]
+      end
+
+      it "renders json" do
+        get :index, format: "json"
+        assert_response :ok
       end
     end
 
@@ -163,6 +172,12 @@ describe SecretsController do
         assert_template :show
       end
 
+      it "renders json" do
+        get :show, params: {id: secret}, format: "json"
+        assert_response :ok
+        refute JSON.parse(response.body)["secret"]["value"]
+      end
+
       it 'hides invisible secrets' do
         get :show, params: {id: secret}
         refute assigns(:secret).fetch(:value)
@@ -180,7 +195,7 @@ describe SecretsController do
         secret.update_column(:updater_id, 32232323)
         get :show, params: {id: secret}
         assert_template :show
-        response.body.must_include "Unknown user id"
+        response.body.must_include "Unknown user"
       end
     end
 
@@ -194,6 +209,13 @@ describe SecretsController do
     describe '#revert' do
       it "is unauthrized" do
         post :revert, params: {id: secret, version: 'v1'}
+        assert_response :unauthorized
+      end
+    end
+
+    describe '#resolve' do
+      it "is unauthorized" do
+        get :resolve
         assert_response :unauthorized
       end
     end
@@ -252,11 +274,27 @@ describe SecretsController do
         assert_redirected_to "/secrets/new?#{{secret: redirect_params}.to_query}"
       end
 
+      it "renders json" do
+        post :create, params: {secret: attributes}, format: :json
+        assert_response :ok
+        refute JSON.parse(response.body)["secret"]["value"]
+      end
+
       it 'renders and sets the flash when invalid' do
         attributes[:key] = ''
         post :create, params: {secret: attributes}
         assert flash[:alert]
         assert_template :show
+      end
+
+      it "renders json error when invalid" do
+        attributes[:key] = ''
+        attributes[:value] = "MY-SECRET"
+        post :create, params: {secret: attributes}, format: :json
+        assert_response :bad_request
+        refute_includes response.body, attributes[:value] # ensure secret value not leaked
+        json = JSON.parse(response.body)
+        assert json["error"]
       end
 
       it "is not authorized to create global secrets" do
@@ -283,8 +321,8 @@ describe SecretsController do
         @attributes ||= super.except(*Samson::Secrets::Manager::ID_PARTS)
       end
 
-      def do_update
-        patch :update, params: {id: secret.id, secret: attributes}
+      def do_update(**kwargs)
+        patch :update, params: {id: secret.id, secret: attributes}, **kwargs
       end
 
       before { secret }
@@ -296,6 +334,20 @@ describe SecretsController do
         secret.reload
         secret.updater_id.must_equal user.id
         secret.creator_id.must_equal users(:admin).id
+      end
+
+      it "renders json" do
+        do_update format: :json
+        assert_response :ok
+        refute JSON.parse(response.body)["secret"]["value"]
+      end
+
+      it "renders json visible values" do
+        attributes[:visible] = true
+        create_secret secret.id, visible: true
+        do_update format: :json
+        assert_response :ok
+        assert JSON.parse(response.body)["secret"]["value"]
       end
 
       it 'backfills value when user is only updating comment' do
@@ -500,6 +552,40 @@ describe SecretsController do
         delete :destroy, params: {id: secret.id}
         assert_redirected_to "/secrets"
         Samson::Secrets::DbBackend::Secret.exists?(secret.id).must_equal(false)
+      end
+    end
+
+    describe "#resolve" do
+      it "renders resolved secrets" do
+        create_secret 'production/z/pod2/bar'
+        get :resolve, params: {project_id: other_project.id, deploy_group: 'pod2', keys: ['bar', 'foo'], format: 'json'}
+        assert_response :success
+
+        result = JSON.parse(response.body)
+        resolved = result['resolved']
+        resolved['bar'].must_equal 'production/z/pod2/bar'
+        resolved['foo'].must_be_nil
+      end
+
+      it "supports resolving by project permalink param" do
+        get :resolve, params: {
+          project_permalink: other_project.permalink, deploy_group: 'pod2', keys: ['bar', 'foo'], format: 'json'
+        }
+        assert_response :success
+      end
+
+      it "errors when no project can be resolved" do
+        get :resolve, params: {format: 'json'}
+        assert_response :bad_request
+      end
+
+      it "handles keys passed as comma delimited list" do
+        get :resolve, params: {
+          project_permalink: other_project.permalink, deploy_group: 'pod2', keys: 'bar,foo,baz', format: 'json'
+        }
+        result = JSON.parse(response.body)
+        resolved = result['resolved']
+        resolved.keys.size.must_equal 3
       end
     end
   end

@@ -3,33 +3,8 @@ module Kubernetes
   class RoleValidator
     # per https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set
     # not perfect since the actual rules are stricter
-    VALID_LABEL_VALUE = /\A[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?\z/.freeze # also used in js ... cannot use /i
-
-    # TODO: lookup dynamically
-    NAMESPACELESS_KINDS = [
-      'ComponentStatus',
-      'Namespace',
-      'Node',
-      'PersistentVolume',
-      'MutatingWebhookConfiguration',
-      'ValidatingWebhookConfiguration',
-      'CustomResourceDefinition',
-      'APIService',
-      'TokenReview',
-      'SelfSubjectAccessReview',
-      'SelfSubjectRulesReview',
-      'SubjectAccessReview',
-      'CertificateSigningRequest',
-      'PodSecurityPolicy',
-      'NodeMetrics',
-      'PodSecurityPolicy',
-      'ClusterRoleBinding',
-      'ClusterRole',
-      'PriorityClass',
-      'StorageClass',
-      'VolumeAttachment',
-      'ImageSecurityPolicy'
-    ].freeze
+    VALID_LABEL_VALUE = /\A[a-zA-Z0-9]([-a-zA-Z0-9_.]*[a-zA-Z0-9])?\z/.freeze
+    VALID_CONTAINER_NAME = /\A[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?\z/.freeze # also used in js ... cannot use /i
 
     # for non-namespace deployments: names that should not be changed since they will break dependencies
     IMMUTABLE_NAME_KINDS = [
@@ -39,6 +14,8 @@ module Kubernetes
 
     # we either generate multiple names or allow custom names
     ALLOWED_DUPLICATE_KINDS = ((['Service'] + IMMUTABLE_NAME_KINDS)).freeze
+
+    DATADOG_AD_REGEXP = %r{(?:service-discovery|ad)\.datadoghq\.com/([^.]+)\.}.freeze
 
     def initialize(elements, project:)
       @project = project
@@ -59,41 +36,54 @@ module Kubernetes
       validate_container_resources
       validate_job_restart_policy
       validate_pod_disruption_budget
-      validate_numeric_cpu_limits
+      validate_security_context
       validate_project_and_role_consistent
       validate_team_labels
       validate_not_matching_team
       validate_stateful_set_service_consistent
-      validate_stateful_set_restart_policy
-      validate_load_balancer
+      validate_daemon_set_supported
       unless validate_annotations
         validate_prerequisites_kinds
         validate_prerequisites_consistency
+        validate_datadog_annotations
       end
       validate_env_values
       validate_host_volume_paths
       @errors.presence
     end
 
+    # @param [Array<Array<Hash>>] elements for a single deploy group, grouped by role
     def self.validate_groups(element_groups)
-      elements = element_groups.flatten(1)
-      return if elements.empty?
-      return if elements.any? { |r| r.dig(:metadata, :annotations, :"samson/multi_project") }
+      return if element_groups.all?(&:empty?)
 
       errors = []
 
-      element_groups.each do |element_group|
-        roles = element_group.map { |r| r.dig(:metadata, :labels, :role) }.uniq
-        if roles.size != 1 || roles == [nil]
-          errors << "metadata.labels.role must be set and consistent in each config file"
-        end
+      # user tries to deploy the exact same resource multiple times from different roles
+      element_groups.each do |elements|
+        errors.concat elements.
+          map { |e| "#{e[:kind]} #{e.dig(:metadata, :namespace)}.#{e.dig(:metadata, :name)} exists multiple times" }.
+          group_by(&:itself).
+          select { |_, v| v.size >= 2 }.
+          keys
       end
 
-      roles = element_groups.map(&:first).map { |r| r.dig(:metadata, :labels, :role) }
-      errors << "metadata.labels.role must be set and unique" if roles.uniq.size != element_groups.size
+      # role/project labels are used correctly
+      unless element_groups.any? { |e| e.any? { |r| r.dig(:metadata, :annotations, :"samson/multi_project") } }
+        element_groups.each do |es|
+          roles = es.map { |r| r.dig(:metadata, :labels, :role) }.uniq
+          if roles.size != 1 || roles == [nil]
+            errors << "metadata.labels.role must be set and consistent in each config file"
+          end
+        end
 
-      projects = elements.map { |r| r.dig(:metadata, :labels, :project) }.uniq
-      errors << "metadata.labels.project must be consistent" if projects.size != 1
+        roles = element_groups.map(&:first).map { |r| r.dig(:metadata, :labels, :role) }
+        if roles.uniq.size != element_groups.size
+          errors << "metadata.labels.role must be set and different in each role"
+        end
+
+        projects = element_groups.flat_map { |e| e.map { |r| r.dig(:metadata, :labels, :project) } }.uniq
+        errors << "metadata.labels.project must be consistent but found #{projects.inspect}" if projects.size != 1
+      end
 
       raise Samson::Hooks::UserError, errors.join(", ") if errors.any?
     end
@@ -104,22 +94,11 @@ module Kubernetes
 
     private
 
-    def validate_load_balancer
-      allowed = ENV["KUBERNETES_ALLOWED_LOAD_BALANCER_NAMESPACES"].to_s.split(",")
-      return if allowed.empty?
-      bad = @elements.map do |e|
-        next unless e[:kind] == "Service" && e.dig(:spec, :type) == "LoadBalancer"
-        namespace = e.dig(:metadata, :namespace) || "unset"
-        namespace unless allowed.include?(namespace)
-      end.compact
-      @errors << "LoadBalancer is not allowed in #{bad.join(", ")} namespace" if bad.any?
-    end
-
     def validate_name
       @errors << "Needs a metadata.name" unless map_attributes([:metadata, :name]).all?
     end
 
-    # not setting a namespace is safe to ignore, because teplate-filler overrides it with the configured namespace
+    # not setting a namespace is safe to ignore, because template-filler overrides it with the configured namespace
     # and that either sets the namespace or is ignored for namespace-less resources
     def validate_namespace
       return unless namespace = @project&.kubernetes_namespace&.name
@@ -146,38 +125,54 @@ module Kubernetes
       # do not validate on global since we hope to be on namespace soon
       return if !@project || !@project.override_resource_names?
 
-      # ignore service since we generate their names
+      # ignore services where we generate their names
       elements = @elements.reject { |e| !e[:kind] || (e[:kind] == "Service" && !self.class.keep_name?(e)) }
 
       # group by kind+name and to sure we have no duplicates
       groups = elements.group_by do |e|
         user_supplied = (ALLOWED_DUPLICATE_KINDS.include?(e.fetch(:kind)) || self.class.keep_name?(e))
-        [e.fetch(:kind), user_supplied ? e.dig(:metadata, :name) : "hardcoded"]
+        [e.fetch(:kind), e.dig(:metadata, :namespace), user_supplied ? e.dig(:metadata, :name) : "hardcoded"]
       end.values
-      return if groups.all? { |group| group.size == 1 }
+      bad = groups.select { |group| group.size > 1 }
+      return if bad.empty?
 
-      @errors << "Only use a maximum of 1 of each kind in a role (except #{ALLOWED_DUPLICATE_KINDS.to_sentence})"
+      bad_kinds = bad.map { |g| g.first[:kind] }
+      @errors <<
+        "Only use 1 per kind #{bad_kinds.join(", ")} in a role\n" \
+        "To bypass: assign a namespace to the project, or set metadata.annotations.samson/keep_name=\"true\""
     end
 
     def validate_api_version
       @errors << "Needs apiVersion specified" if map_attributes([:apiVersion]).any?(&:nil?)
     end
 
-    # spec actually allows this, but blows up when used
-    def validate_numeric_cpu_limits
-      (pod_containers + init_containers).flatten(1).each do |container|
-        [:requests, :limits].each do |scope|
-          path = [:resources, scope, :cpu]
-          next if [NilClass, String].include?(container.dig(*path).class)
-          @errors << "Numeric cpu resources are not supported"
+    # validate datadog-specific annotations against
+    # https://docs.datadoghq.com/agent/autodiscovery/integrations/?tab=kubernetes#configuration
+    def validate_datadog_annotations
+      templates.each do |template|
+        annotations = template.dig(:metadata, :annotations) || {}
+        containers = template.dig(:spec, :containers) || []
+        dd_container_names = annotations.keys.map { |k| k[DATADOG_AD_REGEXP, 1] }.compact.uniq
+        spec_container_names = containers.map { |c| c[:name] }.compact
+        invalid = dd_container_names - spec_container_names
+
+        unless invalid.empty?
+          @errors << "Datadog annotation specified for non-existent container name: #{invalid.join(',')}"
         end
+      end
+    end
+
+    def validate_security_context
+      templates.each do |template|
+        next unless template.dig(:spec, :securityContext, :readOnlyRootFilesystem)
+        @errors << "securityContext.readOnlyRootFilesystem can only be set at the container level"
       end
     end
 
     def validate_project_and_role_consistent
       labels = @elements.flat_map do |resource|
         kind = resource[:kind]
-
+        name = object_name(resource)
         label_paths = metadata_paths(resource).map { |p| p + [:labels] } +
           if resource.dig(:spec, :selector, :matchLabels) || resource[:kind] == "Deployment"
             [[:spec, :selector, :matchLabels]]
@@ -194,7 +189,7 @@ module Kubernetes
           wanted = [:project, :role]
           required = labels.slice(*wanted)
           if required.size != 2
-            @errors << "Missing #{wanted.join(' or ')} for #{kind} #{path.join('.')}"
+            @errors << "Missing #{wanted.join(' or ')} for #{kind} #{name}: #{path.join('.')}"
           end
 
           # make sure we get sane values for labels or deploy will blow up
@@ -218,10 +213,21 @@ module Kubernetes
       @errors << "Project and role labels must be consistent across resources"
     end
 
+    def object_name(resource)
+      meta = resource[:metadata]
+      return "" unless meta
+      name = meta[:name]
+      namespace = meta[:namespace]
+      return name unless namespace
+      "#{namespace}/#{name}"
+    end
+
     def validate_not_matching_team
+      paths = [[:spec, :selector, :team], [:spec, :selector, :matchLabels, :team]]
       @elements.each do |element|
-        if element.dig(:spec, :selector, :team) || element.dig(:spec, :selector, :matchLabels, :team)
-          @errors << "Team names change, do not select or match on them"
+        if paths.any? { |p| element.dig(*p) }
+          message = paths.map { |p| p.join(".") }.join(" or ")
+          @errors << "Do not use #{message}, they can change and will break routing."
         end
       end
     end
@@ -230,7 +236,7 @@ module Kubernetes
       return unless ENV["KUBERNETES_ENFORCE_TEAMS"]
       @elements.each do |element|
         metadata_paths(element).map { |p| p + [:labels, :team] }.each do |path|
-          @errors << "#{path.join(".")} must be set" unless element.dig(*path)
+          @errors << "#{element[:kind]} #{path.join(".")} must be set" unless element.dig(*path)
         end
       end
     end
@@ -242,11 +248,24 @@ module Kubernetes
       @errors << "Service metadata.name and StatefulSet spec.serviceName must be consistent"
     end
 
-    def validate_stateful_set_restart_policy
-      return unless set = find_stateful_set
-      return if set.dig(:spec, :updateStrategy)
-      @errors << "StatefulSet spec.updateStrategy must be set. " \
-        "OnDelete will be supported soon but is brittle/rough, prefer RollingUpdate on kubernetes 1.7+."
+    def validate_daemon_set_supported
+      return unless daemon_set = @elements.detect { |t| t[:kind] == "DaemonSet" }
+
+      if daemon_set[:apiVersion] != "apps/v1"
+        @errors << "set DaemonSet apiVersion to apps/v1"
+        return
+      end
+
+      unless [nil, "RollingUpdate"].include? daemon_set.dig(:spec, :updateStrategy, :type)
+        @errors << "set DaemonSet spec.updateStrategy.type to RollingUpdate"
+        return
+      end
+
+      unless daemon_set.dig(:spec, :updateStrategy, :rollingUpdate, :maxUnavailable)
+        @errors << "set DaemonSet spec.updateStrategy.rollingUpdate.maxUnavailable, the default of 1 is too slow" \
+          " (pick something between '25%' and '100%')"
+        nil
+      end
     end
 
     def validate_containers_exist
@@ -258,14 +277,14 @@ module Kubernetes
       names = (pod_containers + init_containers).flatten(1).map { |c| c[:name] }
       if names.any?(&:nil?)
         @errors << "Containers need a name"
-      elsif bad = names.grep_v(VALID_LABEL_VALUE).presence
-        @errors << "Container name #{bad.join(", ")} did not match #{VALID_LABEL_VALUE.source}"
+      elsif bad = names.grep_v(VALID_CONTAINER_NAME).presence
+        @errors << "Container name #{bad.join(", ")} did not match #{VALID_CONTAINER_NAME.source}"
       end
     end
 
     # keep in sync with TemplateFiller#set_resource_usage
     def validate_container_resources
-      (pod_containers.map { |c| c[1..-1] || [] } + init_containers).flatten(1).each do |container|
+      (pod_containers.map { |c| c[1..] || [] } + init_containers).flatten(1).each do |container|
         [
           [:resources, :requests, :cpu],
           [:resources, :requests, :memory],
@@ -293,11 +312,19 @@ module Kubernetes
 
     def validate_pod_disruption_budget
       return unless budget = @elements.detect { |e| e[:kind] == "PodDisruptionBudget" }
-      return unless min = budget.dig(:spec, :minAvailable)
+
+      min = budget.dig(:spec, :minAvailable)
+      max = budget.dig(:spec, :maxUnavailable)
+      return if !min && !max
+
       @elements.each do |e|
         next unless replicas = e.dig(:spec, :replicas)
-        next if min < replicas
-        @errors << "PodDisruptionBudget spec.minAvailable must be lower than spec.replicas to avoid eviction deadlock"
+        next if min && percentage_available(min, replicas) < replicas
+        next if max && percentage_available(max, replicas) > 0
+
+        @errors <<
+          "PodDisruptionBudget spec.minAvailable/spec.maxUnavailable " \
+          "must leave at least 1 replica for termination, to avoid eviction deadlock"
       end
     end
 
@@ -348,6 +375,14 @@ module Kubernetes
 
     # helpers below
 
+    def percentage_available(num, total)
+      if num.is_a?(Integer)
+        num
+      else
+        (Float(num[/\d+/]) * total / 100).ceil # kubernetes rounds up
+      end
+    end
+
     def pod_containers
       map_attributes([:spec, :containers], elements: templates)
     end
@@ -376,7 +411,7 @@ module Kubernetes
         path.each_with_index.inject(e) do |el, (p, i)|
           el = el[p]
           if el.is_a?(Array)
-            break map_attributes(path[(i + 1)..-1], elements: el).flatten(1)
+            break map_attributes(path[(i + 1)..], elements: el).flatten(1)
           else
             el || break
           end

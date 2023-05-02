@@ -9,7 +9,7 @@ describe Kubernetes::Role do
   def write_config(file, content)
     Dir.chdir(repo_temp_dir) do
       dir = File.dirname(file)
-      Dir.mkdir(dir) if file.include?("/") && !File.exist?(dir)
+      FileUtils.mkdir_p(dir) if file.include?("/") && !File.exist?(dir)
       File.write(file, content)
     end
     commit
@@ -29,7 +29,17 @@ describe Kubernetes::Role do
       kind: 'Pod',
       apiVersion: 'v1',
       metadata: {name: 'foo', labels: {role: 'migrate', project: 'bar'}},
-      spec: {containers: [{name: 'foo', resources: {limits: {cpu: '0.5', memory: '300M'}}}]}
+      spec: {containers: [{name: 'foo', resources: {limits: {cpu: '0.5', memory: '300Mi'}}}]}
+    }
+  end
+  let(:pod_template) do
+    {
+      kind: 'PodTemplate',
+      apiVersion: 'v1',
+      metadata: {name: 'foo', labels: {role: 'migrate', project: 'bar'}},
+      template: {
+        spec: {containers: [{name: 'foo', resources: {limits: {cpu: '0.5', memory: '300Mi'}}}]}
+      }
     }
   end
   let(:config_content) do
@@ -241,7 +251,7 @@ describe Kubernetes::Role do
     end
 
     it "does not see service or resource when using manual naming" do
-      project.create_kubernetes_namespace!(name: "foo")
+      project.kubernetes_namespace = kubernetes_namespaces(:test)
       write_config 'kubernetes/a.json', config_content.to_json
       Kubernetes::Role.seed! project, 'HEAD'
       project.kubernetes_roles.map(&:resource_name).must_equal [nil]
@@ -332,7 +342,7 @@ describe Kubernetes::Role do
       role.defaults[:replicas].must_equal 1
     end
 
-    it "does not fail without spec" do
+    it "seeds to minimum without primary kind (rbac / configmaps etc)" do
       labels = {project: 'some-project', role: 'some-role'}
       map = {
         kind: 'ConfigMap',
@@ -340,15 +350,32 @@ describe Kubernetes::Role do
         metadata: {name: 'datadog', labels: labels},
         namespace: 'default',
         labels: labels
-      }.to_yaml
-      config_content_yml.prepend("#{map}\n---\n")
+      }
+      config_content_yml.replace(map.to_yaml)
       role.defaults.must_equal(
-        replicas: 2,
-        requests_cpu: 0.25,
-        requests_memory: 50,
-        limits_cpu: 0.5,
-        limits_memory: 100
+        replicas: 1,
+        requests_cpu: 0,
+        requests_memory: 6,
+        limits_cpu: 0.01,
+        limits_memory: 6
       )
+    end
+
+    it "finds in pod template" do
+      config_content_yml.replace(pod_template.to_yaml)
+      role.defaults.must_equal(
+        replicas: 1,
+        requests_cpu: 0.5,
+        requests_memory: 300,
+        limits_cpu: 0.5,
+        limits_memory: 300
+      )
+    end
+
+    it "finds from default branch when project has no release_branch" do
+      GitRepository.any_instance.expects(:file_content).with(anything, "master", anything).returns(config_content_yml)
+      project.release_branch = ""
+      assert role.defaults
     end
 
     it "finds values for any kind of resource" do
@@ -362,14 +389,14 @@ describe Kubernetes::Role do
       '10000000' => 10,
       '10000K' => 10,
       '10000Ki' => 10,
-      '10M' => 10,
+      '10M' => 10, # rounded down
       '10Mi' => 10,
-      '10G' => 10 * 1000,
-      '10.5G' => 10.5 * 1000,
-      '10Gi' => 10737,
+      '10G' => 9537,
+      '10.5G' => 10_014,
+      '10Gi' => 10_240,
     }.each do |ram, expected|
       it "converts memory units #{ram}" do
-        assert config_content_yml.sub!('100M', ram)
+        assert config_content_yml.sub!('100Mi', ram)
         role.defaults.try(:[], :limits_memory).must_equal expected
       end
     end
@@ -399,14 +426,14 @@ describe Kubernetes::Role do
       role.defaults.must_be_nil
     end
 
-    it "ignores when there is no config" do
+    it "fails when there is no config" do
       GitRepository.any_instance.stubs(file_content: nil)
-      role.defaults.must_be_nil
+      assert_raises(Samson::Hooks::UserError) { role.defaults }
     end
 
-    it "ignores when config is invalid" do
+    it "fails when config is invalid" do
       assert config_content_yml.sub!('Service', 'Deployment')
-      refute role.defaults
+      assert_raises(Samson::Hooks::UserError) { role.defaults }
     end
   end
 
@@ -417,7 +444,7 @@ describe Kubernetes::Role do
         project: project,
         replicas: 1,
         requests_cpu: 0.5,
-        requests_memory: 5,
+        requests_memory: 7,
         limits_cpu: 1,
         limits_memory: 10,
         deploy_group: deploy_groups(:pod2)
@@ -454,6 +481,16 @@ describe Kubernetes::Role do
     it "required when removing" do
       role.resource_name = nil
       assert role.manual_deletion_required?
+    end
+  end
+
+  describe "#role_config_file" do
+    it "can read from dynamic folders" do
+      GitRepository.any_instance.
+        expects(:file_content).with('kubernetes/pod100/foo.yaml', "master", anything).
+        returns(read_kubernetes_sample_file('kubernetes_job.yml'))
+      role.config_file = "kubernetes/$deploy_group/foo.yaml"
+      assert role.role_config_file("master", deploy_group: deploy_groups(:pod100))
     end
   end
 end

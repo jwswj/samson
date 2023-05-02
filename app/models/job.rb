@@ -3,7 +3,7 @@ class Job < ActiveRecord::Base
   belongs_to :project, inverse_of: :jobs
   belongs_to :user, -> { unscope(where: :deleted_at) }, inverse_of: :jobs
   belongs_to :canceller, -> { unscope(where: "deleted_at") },
-    class_name: 'User', optional: true, inverse_of: nil
+    class_name: 'User', optional: true, inverse_of: false
 
   has_one :deploy, dependent: nil
   has_one :build, dependent: nil, inverse_of: :docker_build_job
@@ -15,8 +15,10 @@ class Job < ActiveRecord::Base
 
   validate :validate_globally_unlocked
 
-  ACTIVE_STATUSES = %w[pending running cancelling].freeze
-  VALID_STATUSES = ACTIVE_STATUSES + %w[failed errored succeeded cancelled].freeze
+  attr_accessor :bypass_global_lock_check
+
+  ACTIVE_STATUSES = ['pending', 'running', 'cancelling'].freeze
+  VALID_STATUSES = ACTIVE_STATUSES + ['failed', 'errored', 'succeeded', 'cancelled'].freeze
   SUMMARY_ACTION = {
     "pending"    => "is about to execute",
     "running"    => "is executing",
@@ -76,7 +78,7 @@ class Job < ActiveRecord::Base
     !JobQueue.dequeue(id) && ex = execution # is executing
     return true if !ex && !active?
 
-    update_attribute(:canceller, canceller) unless self.canceller
+    update_attribute(:canceller, canceller) unless self.canceller # uncovered
 
     if ex
       JobQueue.cancel(id) # switches job status in the runner thread for consistent status in after_deploy hooks
@@ -111,6 +113,10 @@ class Job < ActiveRecord::Base
     JobQueue.executing?(id)
   end
 
+  def kubernetes?
+    deploy && defined?(SamsonKubernetes::SamsonPlugin) && deploy&.stage&.kubernetes
+  end
+
   def waiting_for_restart?
     !JobQueue.enabled && pending?
   end
@@ -132,9 +138,17 @@ class Job < ActiveRecord::Base
     execution&.pid
   end
 
+  # set current incomplete output
+  def serialize_execution_output
+    return unless ex = execution
+    out = ex.output.closed_copy
+    self.output = TerminalOutputScanner.new(out).to_s
+  end
+
   private
 
   def validate_globally_unlocked
+    return if bypass_global_lock_check
     return unless lock = Lock.global.first
     return if lock.warning?
     errors.add(:base, 'all stages are locked')
@@ -145,9 +159,17 @@ class Job < ActiveRecord::Base
   end
 
   def status!(status)
-    success = update_attribute(:status, status)
+    hacky_update_attribute(:status, status)
     report_state if finished?
-    success
+    true
+  end
+
+  # TODO: use update_attribute instead if this hack once we figure out why it causes nil errors see #3662 + #3664
+  def hacky_update_attribute(key, value)
+    update_columns(key => value, updated_at: Time.now)
+    # same as after_update where touch cascades to stage
+    deploy&.update_column(:updated_at, Time.now)
+    deploy&.stage&.update_column(:updated_at, Time.now)
   end
 
   def short_reference
@@ -161,6 +183,7 @@ class Job < ActiveRecord::Base
   def report_state
     payload = {
       stage: deploy&.stage&.permalink,
+      kubernetes: kubernetes?,
       project: project.permalink,
       type: deploy ? 'deploy' : 'build',
       status: status,
@@ -169,3 +192,4 @@ class Job < ActiveRecord::Base
     ActiveSupport::Notifications.instrument('job_status.samson', payload)
   end
 end
+Samson::Hooks.load_decorators(Job)

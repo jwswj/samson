@@ -62,7 +62,7 @@ describe CsvExportsController do
         it "renders json" do
           create_exports
           get :index, params: {format: :json}
-          @response.content_type.must_equal "application/json"
+          @response.media_type.must_equal "application/json"
           @response.body.must_include CsvExport.all.to_json
         end
       end
@@ -71,7 +71,7 @@ describe CsvExportsController do
         it "renders json" do
           CsvExport.delete_all
           get :index, params: {format: :json}
-          @response.content_type.must_equal "application/json"
+          @response.media_type.must_equal "application/json"
         end
       end
     end
@@ -195,7 +195,7 @@ describe CsvExportsController do
           describe "as json" do
             it "renders json" do
               get :show, params: {id: export.id, format: :json}
-              @response.content_type.must_equal "application/json"
+              @response.media_type.must_equal "application/json"
               @response.body.must_equal export.reload.to_json
             end
           end
@@ -232,7 +232,7 @@ describe CsvExportsController do
 
               it "receives file" do
                 get :show, params: {id: export.id, format: 'csv'}
-                @response.content_type.must_equal "text/csv"
+                @response.media_type.must_equal "text/csv"
                 export.reload.status.must_equal "downloaded"
                 assert export.reload.status? :downloaded
               end
@@ -260,7 +260,7 @@ describe CsvExportsController do
         describe "as json" do
           it "returns not found" do
             get :show, params: {id: -9999, format: :json}
-            @response.content_type.must_equal "application/json"
+            @response.media_type.must_equal "application/json"
             @response.body.must_include "not found"
             assert_response 404
           end
@@ -269,7 +269,7 @@ describe CsvExportsController do
         describe "as csv" do
           it "returns not found" do
             get :show, params: {id: -9999, format: :csv}
-            @response.content_type.must_equal "text/csv"
+            @response.media_type.must_equal "text/csv"
             @response.body.must_include "not found"
             assert_response 404
           end
@@ -302,7 +302,7 @@ describe CsvExportsController do
         csv_filter.keys.must_include "jobs.status"
         csv_filter.keys.must_include "stages.project_id"
         start_date = Time.parse(filter[:start_date])
-        end_date = Time.parse(filter[:end_date] + "T23:59:59Z")
+        end_date = Time.parse("#{filter[:end_date]}T23:59:59Z")
         csv_filter["deploys.created_at"].must_equal start_date..end_date
         csv_filter["stages.production"].must_equal true
         csv_filter["jobs.status"].must_equal "succeeded"
@@ -340,6 +340,11 @@ describe CsvExportsController do
       it "with filters bypassed" do
         post :create, params: {bypassed: "true"}
         CsvExport.last.filters.must_equal("deploys.buddy_id" => nil, "stages.no_code_deployed" => false)
+      end
+
+      it "with project_permalinks" do
+        post :create, params: {project_permalinks: Project.first.permalink}
+        CsvExport.last.filters.must_equal("stages.project_id" => [Project.first.id])
       end
     end
   end

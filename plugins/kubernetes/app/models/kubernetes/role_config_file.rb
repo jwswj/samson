@@ -6,9 +6,10 @@ module Kubernetes
   class RoleConfigFile
     attr_reader :path, :elements
 
-    # from https://github.com/helm/helm/blob/release-2.13/pkg/tiller/kind_sorter.go#L29
-    DEPLOY_SORT_ORDER = [
+    # from https://github.com/helm/helm/blob/release-3.0/pkg/releaseutil/kind_sorter.go#L27-L61
+    DEPLOY_SORT_ORDER = ([
       "Namespace",
+      "NetworkPolicy",
       "ResourceQuota",
       "LimitRange",
       "PodSecurityPolicy",
@@ -21,21 +22,26 @@ module Kubernetes
       "ServiceAccount",
       "CustomResourceDefinition",
       "ClusterRole",
+      "ClusterRoleList",
       "ClusterRoleBinding",
+      "ClusterRoleBindingList",
       "Role",
+      "RoleList",
       "RoleBinding",
+      "RoleBindingList",
       "Service",
       "DaemonSet",
       "Pod",
       "ReplicationController",
       "ReplicaSet",
       "Deployment",
+      "HorizontalPodAutoscaler",
       "StatefulSet",
       "Job",
       "CronJob",
       "Ingress",
-      "APIService",
-    ].freeze
+      "APIService"
+    ] + Release::CRD_CREATING.keys).freeze
 
     DEPLOY_KINDS = ['Deployment', 'DaemonSet', 'StatefulSet'].freeze
     SERVICE_KINDS = ['Service'].freeze
@@ -48,7 +54,9 @@ module Kubernetes
 
     def self.templates(resource)
       spec = resource[:spec]
-      if !spec
+      if resource[:kind] == 'PodTemplate'
+        [resource[:template]]
+      elsif !spec
         []
       elsif spec[:containers]
         [resource]

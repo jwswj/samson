@@ -24,8 +24,11 @@ class Changeset::Commit
   end
 
   def summary
-    summary = @data.commit.message.split("\n").first
-    summary.truncate(80)
+    summary_long.truncate(80)
+  end
+
+  def summary_long
+    @data.commit.message.split("\n").first
   end
 
   def sha
@@ -36,8 +39,9 @@ class Changeset::Commit
     @data.sha.slice(0, 7)
   end
 
+  # @return [Integer, NilClass]
   def pull_request_number
-    if number = summary[PULL_REQUEST_MERGE_MESSAGE, 1] || summary[PULL_REQUEST_SQUASH_MESSAGE, 1]
+    if number = summary_long[PULL_REQUEST_MERGE_MESSAGE, 1] || summary_long[PULL_REQUEST_SQUASH_MESSAGE, 1]
       Integer(number)
     end
   end

@@ -4,6 +4,7 @@ require 'validates_lengths_from_database'
 class EnvironmentVariable < ActiveRecord::Base
   FAILED_LOOKUP_MARK = ' X' # SpaceX
   PARENT_PRIORITY = ["Deploy", "Stage", "Project", "EnvironmentVariableGroup"].freeze
+  EXTERNAL_VARIABLE_CACHE_DURATION = 5.minutes
 
   include GroupScope
   extend Inlinable
@@ -24,29 +25,18 @@ class EnvironmentVariable < ActiveRecord::Base
     # preview parameter can be used to not raise an error,
     # but return a value with a helpful message
     # also used by an external plugin
-    def env(deploy, deploy_group, preview: false, resolve_secrets: true)
-      env = {}
+    def env(deploy, deploy_group, resolve_secrets:, project_specific: nil, base: {})
+      env = base.dup
 
-      if deploy_group && deploy.project.config_service?
-        begin
-          url = config_service_folder(deploy.project, required: true)
-          url += "/#{deploy_group.permalink}.yml" # TODO: version ?
-          response = Samson::Retry.with_retries(Faraday::Error, 3) { Faraday.get(url) }
-          raise "Invalid response #{response.status}" unless response.status == 200
-          env.merge! YAML.safe_load(response.body)
-        rescue StandardError => e
-          raise Samson::Hooks::UserError, "Error reading env vars from config service: #{e.message}"
-        end
+      if deploy_group
+        env.merge! env_vars_from_external_groups(deploy.project, deploy_group)
       end
 
-      if deploy_group && (env_repo_name = ENV["DEPLOYMENT_ENV_REPO"]) && deploy.project.use_env_repo
-        env.merge! env_vars_from_repo(env_repo_name, deploy.project, deploy_group)
-      end
+      env.merge! env_vars_from_db(deploy, deploy_group, project_specific: project_specific)
 
-      env.merge! env_vars_from_db(deploy, deploy_group)
-
-      resolve_dollar_variables(env)
-      resolve_secrets(deploy.project, deploy_group, env, preview: preview) if resolve_secrets
+      # TODO: these should be handled outside of the env plugin so other plugins can get their env var resolved too
+      resolve_dollar_variables!(env)
+      resolve_secrets(deploy.project, deploy_group, env, preview: resolve_secrets == :preview) if resolve_secrets
 
       env
     end
@@ -64,36 +54,41 @@ class EnvironmentVariable < ActiveRecord::Base
       end.join("\n")
     end
 
-    def config_service_folder(project, required:)
-      url = ENV["CONFIG_SERVICE_URL"]
-      raise KeyError, "CONFIG_SERVICE_URL not set" if required && !url
-      "#{url}/samson/#{project.permalink}"
-    end
-
     private
 
-    def env_vars_from_db(deploy, deploy_group)
+    def env_vars_from_db(deploy, deploy_group, **args)
       variables =
         deploy.environment_variables +
         (deploy.stage&.environment_variables || []) +
-        deploy.project.nested_environment_variables
+        deploy.project.nested_environment_variables(**args)
       variables.sort_by!(&:priority)
       variables.each_with_object({}) do |ev, all|
-        all[ev.name] = ev.value if !all[ev.name] && ev.matches_scope?(deploy_group)
+        all[ev.name] = ev.value.dup if !all[ev.name] && ev.matches_scope?(deploy_group)
       end
     end
 
-    def env_vars_from_repo(env_repo_name, project, deploy_group)
-      path = "generated/#{project.permalink}/#{deploy_group.permalink}.env"
-      content = GITHUB.contents(env_repo_name, path: path, headers: {Accept: 'applications/vnd.github.v3.raw'})
-      Dotenv::Parser.call(content)
+    def env_vars_from_external_groups(project, deploy_group)
+      external_groups = project.external_environment_variable_groups
+
+      external_groups += (project.environment_variable_groups.select(&:external_url?).map do |env_group|
+        ExternalEnvironmentVariableGroup.new(url: env_group.external_url)
+      end)
+
+      Samson::Parallelizer.map(external_groups) do |group|
+        all_groups = Rails.cache.fetch("env-#{group.url}-read", expires_in: EXTERNAL_VARIABLE_CACHE_DURATION) do
+          group.read
+        end
+        all_groups[deploy_group.permalink] || all_groups["*"]
+      end.compact.inject({}, :merge!)
     rescue StandardError => e
-      raise Samson::Hooks::UserError, "Cannot download env file #{path} from #{env_repo_name} (#{e.message})"
+      raise Samson::Hooks::UserError, "Error reading env vars from external env-groups: #{e.message}"
     end
 
-    def resolve_dollar_variables(env)
-      env.each do |k, value|
-        env[k] = value.gsub(/\$\{(\w+)\}|\$(\w+)/) { |original| env[$1 || $2] || original }
+    def resolve_dollar_variables!(env)
+      env.each_value do |value|
+        3.times do
+          break unless value.gsub!(/\$\{(\w+)\}|\$(\w+)/) { |original| env[$1 || $2] || original }
+        end
       end
     end
 

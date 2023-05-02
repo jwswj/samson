@@ -8,7 +8,7 @@ module Samson
     module Manager
       ID_PARTS = [:environment_permalink, :project_permalink, :deploy_group_permalink, :key].freeze
       ID_PART_SEPARATOR = "/"
-      SECRET_ID_REGEX = %r{[\w\/-]+}.freeze
+      SECRET_ID_REGEX = %r{[\w/-]+}.freeze
       SECRET_LOOKUP_CACHE = 'secret_lookup_cache_v3'
       SECRET_LOOKUP_CACHE_MUTEX = Mutex.new
       VALUE_HASHED_BASE = Digest::SHA2.hexdigest("#{Samson::Application.config.secret_key_base}usedforhashing")
@@ -57,9 +57,16 @@ module Samson
         end
 
         # useful for console sessions
-        def move(from, to)
+        def move(from, to, deprecate:)
           copy(from, to)
-          delete(from)
+          if deprecate
+            old = read(from, include_value: true)
+            old[:user_id] = old.delete(:updater_id)
+            old[:deprecated_at] ||= Time.now
+            write(from, old)
+          else
+            delete(from)
+          end
         end
 
         # useful for console sessions
@@ -83,6 +90,20 @@ module Samson
           id_parts.select! { |parts| parts.fetch(:project_permalink) == from_project }
           id_parts.each do |parts|
             copy(generate_id(parts), generate_id(parts.merge(project_permalink: to_project)))
+          end
+          id_parts.size
+        end
+
+        # useful for console sessions
+        # copies secrets over to new deploy group, needs cleanup of old secrets once project is deployed everywhere
+        # since otherwise in the meantime existing deploys would be unable to restart due to missing secrets
+        def copy_project(project, from_deploy_group, to_deploy_group)
+          id_parts = ids.map { |id| parse_id(id) }
+          id_parts.select! do |parts|
+            parts.fetch(:project_permalink) == project && parts.fetch(:deploy_group_permalink) == from_deploy_group
+          end
+          id_parts.each do |parts|
+            copy(generate_id(parts), generate_id(parts.merge(deploy_group_permalink: to_deploy_group)))
           end
           id_parts.size
         end
@@ -142,13 +163,16 @@ module Samson
         end
 
         def expire_lookup_cache
+          ActiveSupport::Notifications.instrument("secret_cache.samson", {action: "expire"})
           cache.delete(SECRET_LOOKUP_CACHE)
         end
 
         private
 
         def fetch_lookup_cache
+          ActiveSupport::Notifications.instrument("secret_cache.samson", {action: "fetch"})
           cache.fetch(SECRET_LOOKUP_CACHE) do
+            ActiveSupport::Notifications.instrument("secret_cache.samson", {action: "rebuild"})
             backend.ids.each_slice(1000).each_with_object({}) do |slice, all|
               read_multi(slice, include_value: true).each do |id, secret|
                 all[id] = lookup_cache_value(secret)

@@ -1,11 +1,13 @@
 <% page_title @project.name %>
 
-<%= render_locks @project %>
-
 <%= render 'projects/header', project: @project, tab: "stages" %>
 
 <section class="clearfix tabs">
   <%= render 'shared/dashboard', resource: @project %>
+
+  <%= Samson::Hooks.render_views(:project_dashboard, self) %>
+
+  <%= render "stage_name_filter" %>
 
   <table class="project-stages table table-condensed">
     <thead>
@@ -20,10 +22,20 @@
       </tr>
     </thead>
     <tbody>
-      <% if @project.stages.to_a.any? %>
-        <% cache [@project, 'stages', Lock.cache_key] do %>
-          <%= render partial: "stage", collection: @project.stages %>
-        <% end %>
+      <% if @pagy.count != 0 %>
+        <%
+          # expire the cache when the project or any of the stages (and their deploy-groups/envs) gets locked or unlocked
+          # a little expensive, but better than expiring when anything gets locked (confirmed that it's not doing N+1s)
+          project_locks = Lock.for_resource(@project)
+          static_cache_key = [@project.permalink, deployer_for_project?]
+
+          cache_key = ->(stage) do
+            lock_changed = (project_locks + Lock.for_resource(stage)).sum(&:updated_at)
+            [stage, lock_changed, *static_cache_key]
+          end
+        %>
+
+          <%= render partial: "stage", collection: @stages, cached: cache_key %>
       <% else %>
         <tr>
           <td colspan="3">
@@ -33,4 +45,8 @@
       <% end %>
     </tbody>
   </table>
+
+  <div class="admin-actions">
+    <%= paginate @pagy %>
+  </div>
 </section>

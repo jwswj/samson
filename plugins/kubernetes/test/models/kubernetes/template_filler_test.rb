@@ -4,9 +4,8 @@ require_relative "../../test_helper"
 SingleCov.covered!
 
 describe Kubernetes::TemplateFiller do
-  def add_init_container(container)
-    annotations = (raw_template[:spec][:template][:metadata][:annotations] ||= {})
-    annotations[init_container_key] = [container].to_json
+  def with_init_container(container)
+    raw_template[:spec][:template][:spec][:initContainers] = [container]
   end
 
   let(:doc) { kubernetes_release_docs(:test_release_pod_1) }
@@ -17,12 +16,11 @@ describe Kubernetes::TemplateFiller do
   end
   let(:template) { Kubernetes::TemplateFiller.new(doc, raw_template, index: 0) }
   let(:init_container_key) { :'pod.beta.kubernetes.io/init-containers' }
-  let(:init_containers) do
-    JSON.parse(template.to_hash[:spec][:template][:metadata][:annotations][init_container_key])
-  end
+  let(:init_containers) { template.to_hash[:spec][:template][:spec][:initContainers] }
   let(:project) { doc.kubernetes_release.project }
 
   before do
+    kubernetes_fake_raw_template
     doc.send(:resource_template=, YAML.load_stream(read_kubernetes_sample_file('kubernetes_deployment.yml')))
     doc.kubernetes_release.builds = [builds(:docker_build)]
 
@@ -38,7 +36,6 @@ describe Kubernetes::TemplateFiller do
       result.size.must_equal 4
 
       spec = result.fetch(:spec)
-      spec.fetch(:uniqueLabelKey).must_equal "rc_unique_identifier"
       spec.fetch(:replicas).must_equal doc.replica_target
       spec.fetch(:template).fetch(:metadata).fetch(:labels).symbolize_keys.must_equal(
         revision: "1a6f551a2ffa6d88e15eef5461384da0bfb1c194",
@@ -132,8 +129,16 @@ describe Kubernetes::TemplateFiller do
         must_equal doc.kubernetes_release.deploy.url
     end
 
+    it "skips deploy url when deploy is not persisted" do
+      doc.kubernetes_release.deploy.delete
+      result = template.to_hash
+      result.dig(:metadata, :annotations, :"samson/deploy_url").must_be :blank?
+      result.dig(:spec, :template, :metadata, :annotations, :"samson/deploy_url").must_be :blank?
+    end
+
     it "sets replicas for templates" do
-      raw_template[:kind] = "foobar"
+      raw_template[:apiVersion] = "zendesk.com/v1alpha1"
+      raw_template[:kind] = "ShardedDeployment"
       raw_template[:spec].delete :replicas
       raw_template[:spec][:template][:spec][:replicas] = 1
       result = template.to_hash
@@ -141,9 +146,22 @@ describe Kubernetes::TemplateFiller do
       result[:spec][:template][:spec][:replicas].must_equal 2
     end
 
-    ['CustomResourceDefinition', 'APIService'].each do |kind|
-      it "does not set override name for #{kind} since it follows a fixed naming pattern" do
-        raw_template[:kind] = kind
+    it "does not fail when env/secrets are missing during deletion" do
+      raw_template[:spec][:template][:metadata][:annotations] = {"secret/FOO": "bar"}
+      doc.replica_target = 0
+      doc.delete_resource = true
+
+      hash = template.to_hash
+      refute hash.dig(:spec, :template, :spec, :containers, 0, :env)
+      hash.dig(:spec, :template, :metadata, :annotations).keys.must_equal [:"secret/FOO", :"samson/deploy_url"]
+    end
+
+    [
+      {apiVersion: 'apiregistration.k8s.io/v1beta1', kind: 'APIService'},
+      {apiVersion: 'apiextensions.k8s.io/v1beta1', kind: 'CustomResourceDefinition'}
+    ].each do |config|
+      it "does not set override name for #{config[:kind]} since it follows a fixed naming pattern" do
+        raw_template.merge!(config)
         raw_template[:metadata].delete(:namespace)
         template.to_hash[:metadata][:name].must_equal "some-project-rc"
         template.to_hash[:metadata][:namespace].must_equal nil
@@ -152,7 +170,8 @@ describe Kubernetes::TemplateFiller do
 
     describe "name" do
       it "sets name for unknown non-primary kinds" do
-        raw_template[:kind] = "foobar"
+        raw_template[:apiVersion] = "zendesk.com/v1alpha1"
+        raw_template[:kind] = "ShardedDeployment"
         raw_template[:spec][:template][:spec].delete(:containers)
         template.to_hash[:metadata][:name].must_equal "test-app-server"
       end
@@ -165,32 +184,54 @@ describe Kubernetes::TemplateFiller do
 
       it "keeps resource name when project namespace is set" do
         raw_template[:metadata][:name] = "foobar"
-        project.create_kubernetes_namespace!(name: "bar")
+        project.kubernetes_namespace = kubernetes_namespaces(:test)
         template.to_hash[:metadata][:name].must_equal 'foobar'
       end
     end
 
     describe "namespace" do
+      before { doc.created_cluster_resources = {} }
+
       it "keeps namespaces when set" do
         raw_template[:metadata][:namespace] = "default"
         template.to_hash[:metadata][:namespace].must_equal 'default'
       end
 
-      it "keeps namespaces when nil is set for 1-off namespace-less kinds" do
-        raw_template[:metadata][:namespace] = nil
-        # secret pulling does not work without namespace, but deployments never have none
-        template.stubs(:set_image_pull_secrets)
-        template.to_hash[:metadata][:namespace].must_equal nil
+      it "alerts when setting a namespace for a namespace-less kind" do
+        raw_template[:apiVersion] = "apiregistration.k8s.io/v1beta1"
+        raw_template[:kind] = "APIService"
+        raw_template[:metadata][:namespace] = "oops"
+        e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
+        e.message.must_equal "APIService should not have a namespace"
+      end
+
+      it "alerts on unknown kind" do
+        raw_template[:apiVersion] = "v1"
+        e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
+        e.message.must_equal "Cluster \"test\" does not support v1 Deployment (cached 1h)"
+      end
+
+      it "alerts on unknown namespace" do
+        stub_request(:get, "http://foobar.server/api/vwtf").to_return(status: 404)
+        raw_template[:apiVersion] = "vwtf"
+        e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
+        e.message.must_equal "Cluster \"test\" does not support vwtf Deployment (cached 1h)"
       end
 
       it "sets namespace from kubernetes_namespace" do
         raw_template[:metadata].delete(:namespace)
-        project.create_kubernetes_namespace!(name: "bar")
-        template.to_hash[:metadata][:namespace].must_equal "bar"
+        project.kubernetes_namespace = kubernetes_namespaces(:test)
+        template.to_hash[:metadata][:namespace].must_equal "test"
+      end
+
+      it "can read CRDs from currently deploying role" do
+        raw_template[:kind] = "MyCustomResource"
+        doc.created_cluster_resources = {"MyCustomResource" => {"namespaced" => true}}
+        template.to_hash[:metadata][:namespace].must_equal "pod1"
       end
     end
 
-    describe "unqiue deployments" do
+    describe "unique deployments" do
       let(:labels) do
         hash = template.to_hash
         [
@@ -209,6 +250,7 @@ describe Kubernetes::TemplateFiller do
 
       it "overrides project label in pod" do
         raw_template.replace(raw_template.dig(:spec, :template).merge(raw_template.slice(:metadata)))
+        raw_template[:apiVersion] = "v1"
         raw_template[:kind] = "Pod"
         doc.replica_target = 1
         raw_template[:spec].delete(:template)
@@ -224,6 +266,7 @@ describe Kubernetes::TemplateFiller do
 
     describe "configmap" do
       it "modifies nothing" do
+        raw_template[:apiVersion] = 'v1'
         raw_template[:kind] = "ConfigMap"
         raw_template.delete(:spec)
         result = template.to_hash
@@ -233,7 +276,10 @@ describe Kubernetes::TemplateFiller do
     end
 
     describe "service" do
-      before { raw_template[:kind] = 'Service' }
+      before do
+        raw_template[:apiVersion] = 'v1'
+        raw_template[:kind] = 'Service'
+      end
 
       it "does not override with blank service name" do
         doc.kubernetes_role.update_column(:service_name, '') # user left field empty
@@ -262,7 +308,7 @@ describe Kubernetes::TemplateFiller do
 
         it "keeps service name when project namespace is set" do
           raw_template[:metadata][:name] = "foobar"
-          project.create_kubernetes_namespace!(name: "bar")
+          project.kubernetes_namespace = kubernetes_namespaces(:test)
           template.to_hash[:metadata][:name].must_equal 'foobar'
         end
       end
@@ -285,39 +331,6 @@ describe Kubernetes::TemplateFiller do
         it "does not keeps identical service names" do
           raw_template[:metadata][:name] = 'foo'
           template.to_hash[:metadata][:name].must_equal 'foo-2'
-        end
-      end
-
-      describe "clusterIP" do
-        let(:ip) { template.to_hash[:spec][:clusterIP] }
-
-        before do
-          doc.deploy_group.kubernetes_cluster.update_column(:ip_prefix, '123.34')
-          raw_template[:spec][:clusterIP] = "1.2.3.4"
-        end
-
-        it "replaces ip prefix" do
-          ip.must_equal '123.34.3.4'
-        end
-
-        it "replaces with trailing ." do
-          doc.deploy_group.kubernetes_cluster.update_column(:ip_prefix, '123.34.')
-          ip.must_equal '123.34.3.4'
-        end
-
-        it "does nothing when service has no clusterIP" do
-          raw_template[:spec].delete(:clusterIP)
-          ip.must_be_nil
-        end
-
-        it "does nothing when ip prefix is blank" do
-          doc.deploy_group.kubernetes_cluster.update_column(:ip_prefix, '')
-          ip.must_equal '1.2.3.4'
-        end
-
-        it "leaves None alone" do
-          raw_template[:spec][:clusterIP] = "None"
-          ip.must_equal 'None'
         end
       end
     end
@@ -348,7 +361,7 @@ describe Kubernetes::TemplateFiller do
         end
 
         it "does nothing when names are manual" do
-          project.create_kubernetes_namespace!(name: "bar")
+          project.kubernetes_namespace = kubernetes_namespaces(:test)
           service_name.must_equal "unchanged"
         end
       end
@@ -407,12 +420,15 @@ describe Kubernetes::TemplateFiller do
         end
 
         it "allows selecting dockerfile for init containers" do
-          add_init_container "samson/dockerfile": 'Dockerfile', name: 'foo'
-          init_containers[0].must_equal("samson/dockerfile" => "Dockerfile", "image" => image, "name" => "foo")
+          with_init_container "samson/dockerfile": 'Dockerfile', name: 'foo'
+          init_containers[0].must_equal(image: image, name: "foo")
+          template.to_hash.
+            dig(:spec, :template, :metadata, :annotations, :"container-foo-samson/dockerfile").
+            must_equal "Dockerfile"
         end
 
         it "raises if an init container does not specify a dockerfile" do
-          add_init_container a: 1, "samson/dockerfile": 'Foo', name: 'foo'
+          with_init_container a: 1, "samson/dockerfile": 'Foo', name: 'foo'
           e = assert_raises(Samson::Hooks::UserError) { init_containers[0] }
           e.message.must_equal(
             "Did not find build for dockerfile \"Foo\".\nFound builds: [[\"Dockerfile\"]].\n"\
@@ -443,112 +459,77 @@ describe Kubernetes::TemplateFiller do
             raw_template[:spec][:template][:spec][:containers][0][:image] = 'foo'
           end
 
-          it "calls vulnerability scanner for digests" do
-            image = "foo.com/example/bar@sha256:#{"a" * 64}"
-            raw_template[:spec][:template][:spec][:containers][0][:image] = image
-            SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities).
-              with(anything, image)
-            result
-          end
-
-          it "calls vulnerability scanner for resolved tags" do
-            Samson::Hooks.with_callback(:resolve_docker_image_tag, ->(*) { "resolved-digest" }) do
-              SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities).
-                with(anything, "resolved-digest")
-              result
+          it "does not modify image when resolve fails" do
+            Samson::Hooks.with_callback(:resolve_docker_image_tag, ->(*) { nil }) do
+              result.dig(:spec, :template, :spec, :containers, 0, :image).must_equal "foo"
             end
           end
 
-          it "does not modify image when resolve fails" do
-            Samson::Hooks.with_callback(:resolve_docker_image_tag, ->(*) { nil }) do
-              SamsonGcloud.expects(:ensure_docker_image_has_no_vulnerabilities).
-                with(anything, "foo")
-              result
+          it "modifies image with resolution result" do
+            Samson::Hooks.with_callback(:resolve_docker_image_tag, ->(*) { "some-sha" }) do
+              result.dig(:spec, :template, :spec, :containers, 0, :image).must_equal "some-sha"
             end
           end
         end
       end
 
-      describe '#modify_init_container' do
-        def add_init_contnainer_new_syntax(container)
-          raw_template[:spec][:template][:spec][:initContainers] = [container]
+      describe 'init container' do
+        def with_init_contnainer_old_syntax(container)
+          annotations = (raw_template[:spec][:template][:metadata][:annotations] ||= {})
+          annotations[init_container_key] = [container].to_json
         end
 
         let(:spec_annotation_containers) do
           JSON.parse(result.dig(:spec, :template, :metadata, :annotations, init_container_key) || '[]')
         end
-
         let(:spec_init_containers) { result.dig(:spec, :template, :spec, :initContainers) || [] }
 
-        it 'sets init containers in annotations if using < 1.6.0 k8s server version' do
-          add_init_container "samson/dockerfile": 'Dockerfile', name: 'foo'
-          spec_annotation_containers[0].must_equal(
-            "samson/dockerfile" => "Dockerfile",
-            "image" => image,
-            "name" => "foo"
-          )
+        it 'sets init containers' do
+          with_init_container name: 'foo'
+
+          spec_annotation_containers.must_equal []
+          spec_init_containers[0].must_equal image: image, name: "foo"
         end
 
-        it 'sets init containers using updated syntax to old syntax if using < 1.6.0 k8s server version' do
-          add_init_contnainer_new_syntax('samson/dockerfile': 'Dockerfile', name: 'foo')
+        it 'sets init containers when given using old syntax' do
+          with_init_contnainer_old_syntax(name: 'foo')
 
-          spec_init_containers.must_equal([])
-          spec_annotation_containers[0].must_equal(
-            "samson/dockerfile" => "Dockerfile",
-            "image" => image,
-            "name" => "foo"
-          )
+          spec_annotation_containers.must_equal([])
+          spec_init_containers[0].must_equal image: image, name: "foo"
         end
 
         it 'does not set init containers if there are none' do
           spec_annotation_containers.must_equal([])
         end
 
-        describe 'using new server version' do
-          before do
-            stub_request(:get, 'http://foobar.server/version').to_return(body: '{"gitVersion": "v1.6.0"}')
-          end
-
-          it 'sets init containers in spec if using >= 1.6.0 k8s server version' do
-            add_init_contnainer_new_syntax("samson/dockerfile": 'Dockerfile', name: 'foo')
-            spec_init_containers[0].must_equal('samson/dockerfile': "Dockerfile", image: image, name: 'foo')
-          end
-
-          it 'sets init containers using old syntax to new syntax if using >= 1.6.0 k8s server version' do
-            add_init_container "samson/dockerfile": 'Dockerfile', name: 'foo'
-
-            spec_annotation_containers.must_equal([])
-            spec_init_containers[0].must_equal('samson/dockerfile': "Dockerfile", image: image, name: 'foo')
-          end
-
-          it 'does not set init containers if there are none' do
-            spec_init_containers.must_equal([])
-          end
+        it "adds env vars to init containers when requested" do
+          with_init_container name: 'foo', "samson/set_env_vars": "true"
+          spec_init_containers.dig(0, :env, 0, :name).must_equal "REVISION"
         end
       end
 
       it "copies resource values" do
         container.fetch(:resources).must_equal(
           requests: {
-            cpu: 0.5,
-            memory: "50M"
+            cpu: '0.1',
+            memory: "128Mi"
           },
           limits: {
-            cpu: 1.0,
-            memory: "100M"
+            cpu: '0.5',
+            memory: "1024Mi"
           }
         )
       end
 
       it "does not set cpu limit when using no_cpu_limit" do
-        doc.no_cpu_limit = true
+        doc.deploy_group_role.no_cpu_limit = true
         container.fetch(:resources).must_equal(
           requests: {
-            cpu: 0.5,
-            memory: "50M"
+            cpu: '0.1',
+            memory: "128Mi"
           },
           limits: {
-            memory: "100M"
+            memory: "1024Mi"
           }
         )
       end
@@ -556,20 +537,17 @@ describe Kubernetes::TemplateFiller do
       it "fills then environment with string values" do
         env = container.fetch(:env)
         env.map { |x| x.fetch(:name) }.sort.must_equal(
-          %w[
-            REVISION
-            TAG
-            PROJECT
-            ROLE
-            DEPLOY_ID
-            DEPLOY_GROUP
-            POD_NAME
-            POD_NAMESPACE
-            POD_IP
-            KUBERNETES_CLUSTER_NAME
+          [
+            'REVISION', 'TAG', 'PROJECT', 'ROLE', 'DEPLOY_ID', 'DEPLOY_GROUP',
+            'POD_NAME', 'POD_NAMESPACE', 'POD_IP', 'KUBERNETES_CLUSTER_NAME'
           ].sort
         )
-        env.map { |x| x[:value] }.map(&:class).map(&:name).sort.uniq.must_equal(["NilClass", "String"])
+        env.map { |x| x.key?(:value) && x[:value].class.must_equal(String, "#{x.inspect} needs a String value") }
+      end
+
+      it "does not modify env values" do
+        doc.kubernetes_release.git_ref = "v1.2.3"
+        container.fetch(:env).detect { |e| e[:name] == "TAG" }[:value].must_equal "v1.2.3"
       end
 
       it "merges existing env settings" do
@@ -585,6 +563,13 @@ describe Kubernetes::TemplateFiller do
         end
       end
 
+      it "does not add env when requested" do
+        pod = raw_template[:spec][:template]
+        pod[:spec][:containers][0][:"samson/set_env_vars"] = "false"
+        pod[:spec][:containers][0][:env] = [{foo: "bar"}]
+        container[:env].must_equal [{foo: "bar"}]
+      end
+
       it "overrides container env with deploy_env so samson can modify env variables" do
         raw_template[:spec][:template][:spec][:containers].first[:env] = [{name: 'FromEnv', value: 'THIS-IS-BAD'}]
         # plugins can return string or symbol keys, we should be prepared for both
@@ -593,6 +578,14 @@ describe Kubernetes::TemplateFiller do
             [{name: 'FromEnv', value: 'THIS-IS-GOOD'}]
           )
         end
+      end
+
+      it "does not override container env var when requested" do
+        raw_template[:spec][:template][:spec][:containers].first[:env] = [{name: 'TAG', value: 'OVERRIDE'}]
+        raw_template[:spec][:template][:spec][:containers].first[:"samson/keep_env_var"] = "TAG"
+        container.fetch(:env).select { |e| e[:name] == 'TAG' }.must_equal(
+          [{name: 'TAG', value: 'OVERRIDE'}]
+        )
       end
 
       describe "with multiple containers" do
@@ -626,12 +619,12 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "adds secret puller container" do
-        init_containers.first['name'].must_equal('secret-puller')
-        init_containers.first['env'].must_equal(
+        init_containers.first[:name].must_equal('secret-puller')
+        init_containers.first[:env].must_equal(
           [
-            {"name" => "VAULT_TLS_VERIFY", "value" => "false"},
-            {"name" => "VAULT_MOUNT", "value" => "secret"},
-            {"name" => "VAULT_PREFIX", "value" => "apps"}
+            {name: "VAULT_TLS_VERIFY", value: "false"},
+            {name: "VAULT_MOUNT", value: "secret"},
+            {name: "VAULT_PREFIX", value: "apps"}
           ]
         )
 
@@ -644,7 +637,7 @@ describe Kubernetes::TemplateFiller do
 
       it "adds vault kv v2 hint so puller knows to use the new api" do
         vault_server.update_column :versioned_kv, true
-        init_containers.first['env'].last.must_equal "name" => "VAULT_PREFIX", "value" => "apps"
+        init_containers.first[:env].last.must_equal name: "VAULT_PREFIX", value: "apps"
       end
 
       it "fails when vault is not configured" do
@@ -675,8 +668,13 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "adds to existing volume definitions in the puller" do
-        raw_template[:spec][:template][:spec][:volumes] = [{}, {}]
+        raw_template[:spec][:template][:spec][:volumes] = [{}]
         template.to_hash[:spec][:template][:spec][:volumes].count.must_equal 5
+      end
+
+      it "does not duplicate definitions" do
+        raw_template[:spec][:template][:spec][:volumes] = [{name: "vaultauth", secret: {secretName: "vaultauth"}}]
+        template.to_hash[:spec][:template][:spec][:volumes].count.must_equal 4
       end
 
       it "adds to existing volume definitions in the primary container" do
@@ -704,6 +702,18 @@ describe Kubernetes::TemplateFiller do
         e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
         e.message.must_include "bar\n  (tried: production/foo/pod1/bar"
         e.message.must_include "baz\n  (tried: production/foo/pod1/baz" # shows all at once for easier debugging
+      end
+
+      it "with secret-sidecar" do
+        stub_const Kubernetes::TemplateFiller, :SECRET_PULLER_TYPE, "secret-sidecar" do
+          init_containers.first[:command].must_equal(['/bin/secret-sidecar-v2'])
+          init_containers.first[:env].must_equal [
+            {name: "VAULT_ADDR", valueFrom: {secretKeyRef: {name: "vaultauth", key: "address"}}},
+            {name: "VAULT_ROLE", value: "foo"},
+            {name: "VAULT_TOKEN", valueFrom: {secretKeyRef: {name: "vaultauth", key: "authsecret"}}},
+            {name: "RUN_ONCE", value: "true"}
+          ]
+        end
       end
 
       describe "converting secrets in env to annotations" do
@@ -786,11 +796,36 @@ describe Kubernetes::TemplateFiller do
       end
     end
 
+    describe "podtemplate" do
+      let(:result) { template.to_hash }
+      let(:containers) { result.dig_fetch(:template, :spec, :containers) }
+      let(:container) { containers.first }
+      let(:build) { builds(:docker_build) }
+      let(:image) { build.docker_repo_digest }
+
+      before do
+        raw_template.replace(
+          YAML.safe_load(
+            read_kubernetes_sample_file('kubernetes_podtemplate.yml')
+          ).deep_symbolize_keys
+        )
+      end
+
+      it "does not populate spec attribute" do
+        result.fetch(:spec, nil).must_be_nil
+      end
+
+      it "overrides image" do
+        container.fetch(:image).must_equal image
+      end
+    end
+
     describe "pod" do
       before do
         original_metadata = raw_template.fetch(:metadata)
         raw_template.replace(raw_template.dig(:spec, :template))
         raw_template[:metadata].merge!(original_metadata)
+        raw_template[:apiVersion] = 'v1'
         raw_template[:kind] = "Pod"
         raw_template[:spec].delete :replicas
         doc.replica_target = 1
@@ -837,8 +872,14 @@ describe Kubernetes::TemplateFiller do
     end
 
     describe "preStop" do
-      it "does not add preStop" do
-        refute template.to_hash.dig_fetch(:spec, :template, :spec, :containers, 0).key?(:lifecycle)
+      def lifecycle_defined?
+        template.to_hash.dig_fetch(:spec, :template, :spec, :containers, 0).key?(:lifecycle)
+      end
+
+      before { raw_template[:spec][:template][:spec][:ports] = [{name: "foo"}] }
+
+      it "does not add preStop when not enabled" do
+        refute lifecycle_defined?
       end
 
       describe "with preStop enabled" do
@@ -846,8 +887,38 @@ describe Kubernetes::TemplateFiller do
 
         it "adds preStop to avoid 502 errors when server addresses are cached for a few seconds" do
           template.to_hash.dig_fetch(:spec, :template, :spec, :containers, 0, :lifecycle).must_equal(
-            preStop: {exec: {command: ["sleep", "3"]}}
+            preStop: {exec: {command: ["/bin/sleep", "3"]}}
           )
+        end
+
+        describe "when pod would terminate before finishing to sleep" do
+          with_env(KUBERNETES_PRESTOP_SLEEP_DURATION: "50")
+
+          it "bumps termination grace period" do
+            template.to_hash.dig_fetch(:spec, :template, :spec, :terminationGracePeriodSeconds).must_equal(53)
+          end
+
+          it "overrides termination grace period when user configured too low value" do
+            raw_template[:spec][:template][:spec][:terminationGracePeriodSeconds] = 10
+            template.to_hash.dig_fetch(:spec, :template, :spec, :terminationGracePeriodSeconds).must_equal(53)
+          end
+
+          it "does not set termination grace period when disabled" do
+            raw_template.dig_fetch(:spec, :template, :spec, :containers, 0)[:"samson/preStop"] = "disabled"
+            refute template.to_hash.dig(:spec, :template, :spec, :terminationGracePeriodSeconds)
+          end
+
+          it "prefers annotation over deprecated container config" do
+            raw_template[:spec][:template][:metadata][:annotations] =
+              {'container-some-project-samson/preStop': 'disabled'}
+            raw_template.dig_fetch(:spec, :template, :spec, :containers, 0)[:"samson/preStop"] = "nope"
+            refute template.to_hash.dig(:spec, :template, :spec, :terminationGracePeriodSeconds)
+          end
+        end
+
+        it "does not add preStop to DaemonSet" do
+          raw_template[:kind] = 'DaemonSet'
+          refute lifecycle_defined?
         end
 
         it "does not add preStop when it was already defined" do
@@ -855,17 +926,24 @@ describe Kubernetes::TemplateFiller do
           template.to_hash.dig_fetch(:spec, :template, :spec, :containers, 0, :lifecycle).must_equal(
             preStop: "OLD"
           )
+          refute template.to_hash.dig(:spec, :template, :spec, :terminationGracePeriodSeconds)
         end
 
         it "does not add preStop when opted out" do
           raw_template.dig_fetch(:spec, :template, :spec, :containers, 0)[:"samson/preStop"] = "disabled"
-          refute template.to_hash.dig_fetch(:spec, :template, :spec, :containers, 0).key?(:lifecycle)
+          refute lifecycle_defined?
+        end
+
+        it "does not add preStop when there are no ports that could create problems" do
+          raw_template.dig_fetch(:spec, :template, :spec, :containers, 0).delete(:ports)
+          refute lifecycle_defined?
         end
       end
     end
 
     describe "HorizontalPodAutoscaler" do
       before do
+        raw_template[:apiVersion] = 'autoscaling/v1'
         raw_template[:kind] = "HorizontalPodAutoscaler"
         raw_template[:spec][:scaleTargetRef] = {}
       end
@@ -876,7 +954,7 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "does not change names when using namespaces" do
-        project.create_kubernetes_namespace!(name: "bar")
+        project.kubernetes_namespace = kubernetes_namespaces(:test)
         template.to_hash.dig_fetch(:metadata, :name).must_equal("some-project-rc")
         template.to_hash.dig_fetch(:spec, :scaleTargetRef).must_equal({})
       end
@@ -884,6 +962,7 @@ describe Kubernetes::TemplateFiller do
 
     describe "PodDisruptionBudget" do
       before do
+        raw_template[:apiVersion] = 'policy/v1'
         raw_template[:kind] = 'PodDisruptionBudget'
         raw_template[:spec][:template][:spec].delete(:containers)
       end
@@ -902,6 +981,7 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "modifies the service" do
+        raw_template[:apiVersion] = 'v1'
         raw_template[:kind] = 'Service'
         template.to_hash.dig_fetch(:spec, :selector, :blue_green).must_equal 'green'
       end
@@ -916,6 +996,7 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "modified budgets so we do not get errors when 2 budgets match the same pod" do
+        raw_template[:apiVersion] = 'policy/v1'
         raw_template[:kind] = 'PodDisruptionBudget'
         raw_template[:spec].delete(:template)
         hash = template.to_hash
@@ -963,6 +1044,13 @@ describe Kubernetes::TemplateFiller do
         template.to_hash[:metadata][:annotations][:"foo.bar/baz"].must_equal "bar"
       end
 
+      it "can set arbitrary paths that include dots by escaping them" do
+        raw_template[:metadata][:annotations] = {
+          "samson/set_via_env_json-metadata.baz\\.zende\\.sk/foo" => "FOO"
+        }
+        template.to_hash[:metadata][:"baz.zende.sk/foo"].must_equal "bar"
+      end
+
       it "sets labels with ." do
         raw_template[:metadata][:annotations] = {
           "samson/set_via_env_json-metadata.labels.foo.bar/baz" => "FOO"
@@ -990,9 +1078,8 @@ describe Kubernetes::TemplateFiller do
       it "fails nicely with invalid json" do
         environment.update_column(:value, 'foo')
         e = assert_raises(Samson::Hooks::UserError) { template.to_hash }
-        e.message.must_equal(
-          "Unable to set path spec.foo for Deployment in role app-server: " \
-          "JSON::ParserError 765: unexpected token at 'foo'"
+        e.message.must_include(
+          "Unable to set path spec.foo for Deployment in role app-server: JSON::ParserError"
         )
       end
 
@@ -1003,24 +1090,132 @@ describe Kubernetes::TemplateFiller do
           "Unable to set path spec.foo for Deployment in role app-server: KeyError key not found: \"FOO\""
         )
       end
+
+      it "can configure with dynamic env vars" do
+        EnvironmentVariable.create!(parent: projects(:test), name: 'NAME_AS_JSON', value: '"foo-$TAG"')
+        EnvironmentVariable.create!(parent: projects(:test), name: 'TAG_AS_JSON', value: '"$TAG"')
+        raw_template[:metadata][:annotations] = {
+          "samson/keep_name": "true",
+          "samson/set_via_env_json-metadata.name": "NAME_AS_JSON",
+          "samson/set_via_env_json-spec.matches_service": "NAME_AS_JSON",
+          "samson/set_via_env_json-spec.template.metadata.labels.tag": "TAG_AS_JSON"
+        }
+        t = template.to_hash
+        t.dig(:metadata, :name).must_equal "foo-master"
+        t.dig(:spec, :matches_service).must_equal "foo-master"
+        t.dig(:spec, :template, :metadata, :labels, :tag).must_equal "master"
+        t.dig(:spec, :template, :spec, :containers, 0, :env).
+          detect { |h| h[:name] == "TAG_AS_JSON" }[:value].must_equal '"master"'
+      end
     end
 
     describe "set_kritis_breakglass" do
+      with_env KRITIS_BREAKGLASS_SUPPORTED: "true"
+
+      let(:kritis) { template.to_hash[:metadata][:annotations][:"kritis.grafeas.io/breakglass"] }
+
       it "does not add by default" do
-        template.to_hash[:metadata][:labels].keys.must_equal [:project, :role]
+        kritis.must_be_nil
+      end
+
+      it "adds when requested via deploy" do
+        doc.kubernetes_release.deploy.kubernetes_ignore_kritis_vulnerabilities = true
+        kritis.must_equal "true"
       end
 
       describe "when requested" do
         before { doc.deploy_group.kubernetes_cluster.update_column(:kritis_breakglass, true) }
 
         it "adds when requested" do
-          template.to_hash[:metadata][:labels].keys.must_equal [:project, :role, :"kritis.grafeas.io/tutorial"]
+          kritis.must_equal "true"
         end
 
         it "does not add to non-runnables" do
+          raw_template[:apiVersion] = 'v1'
           raw_template[:kind] = "Service"
-          template.to_hash[:metadata][:labels].keys.must_equal [:project, :role]
+          kritis.must_be_nil
         end
+      end
+    end
+
+    describe "istio sidecar injection" do
+      with_env ISTIO_INJECTION_SUPPORTED: "true"
+
+      before { doc.deploy_group_role.inject_istio_annotation = true }
+
+      let(:istio_annotation) { :'sidecar.istio.io/inject' }
+
+      let(:pod_annotation) { template.to_hash.dig(:spec, :template, :metadata, :annotations, istio_annotation) }
+      let(:pod_label) { template.to_hash.dig(:spec, :template, :metadata, :labels, istio_annotation) }
+      let(:resource_label) { template.to_hash.dig(:metadata, :labels, istio_annotation) }
+
+      it "modifies the Deployment" do
+        pod_annotation.must_equal 'true'
+        pod_label.must_equal 'true'
+        resource_label.must_equal 'true'
+      end
+
+      it "adds the ISTIO_STATUS env var" do
+        template.to_hash.dig(:spec, :template, :spec, :containers).each do |container|
+          istio_status_var = container[:env].detect { |ev| ev[:name] == 'ISTIO_STATUS' }
+          value = istio_status_var.dig(:valueFrom, :fieldRef, :fieldPath)
+          value.must_equal "metadata.annotations['sidecar.istio.io/status']"
+        end
+      end
+
+      it "has no effect when not enabled" do
+        doc.deploy_group_role.inject_istio_annotation = false
+
+        pod_annotation.must_be_nil
+        pod_label.must_be_nil
+        resource_label.must_be_nil
+      end
+
+      it "does not modify resources like Service" do
+        raw_template[:apiVersion] = "v1"
+        raw_template[:kind] = "Service"
+        pod_annotation.must_be_nil
+        pod_label.must_be_nil
+        resource_label.must_be_nil
+      end
+    end
+
+    describe "updateTimestamp" do
+      it "sets updateTimestamp" do
+        Time.stubs(:now).returns(Time.parse("2018-01-01"))
+        template.to_hash[:metadata][:annotations][:"samson/updateTimestamp"].must_equal "2018-01-01T00:00:00Z"
+      end
+    end
+
+    describe "well known labels" do
+      around { |t| stub_const Kubernetes::TemplateFiller, :KUBERNETES_ADD_WELL_KNOWN_LABELS, true, &t }
+
+      it "adds app.kubernetes.io/managed-by label to resources and templates" do
+        result = template.to_hash
+        result.dig(:metadata, :labels, :"app.kubernetes.io/managed-by").must_equal "samson"
+        result.dig(:spec, :template, :metadata, :labels, :"app.kubernetes.io/managed-by").must_equal "samson"
+      end
+
+      it "adds app.kubernetes.io/managed-by label to jobTemplate template" do
+        raw_template.replace(YAML.safe_load(read_kubernetes_sample_file("kubernetes_cron_job.yml")).deep_symbolize_keys)
+        doc.replica_target = 1
+        result = template.to_hash
+        result.dig(:spec, :jobTemplate, :spec, :template, :metadata, :labels, :"app.kubernetes.io/managed-by").
+          must_equal "samson"
+      end
+
+      it "adds app.kubernetes.io/name label if not set" do
+        result = template.to_hash
+        result.dig(:metadata, :labels, :"app.kubernetes.io/name").must_equal project.permalink
+        result.dig(:spec, :template, :metadata, :labels, :"app.kubernetes.io/name").must_equal project.permalink
+      end
+
+      it "does not add app.kubernetes.io/name label if already set" do
+        raw_template[:metadata][:labels] = {"app.kubernetes.io/name": "Bar"}
+        raw_template[:spec][:template][:metadata][:labels] = {"app.kubernetes.io/name": "Bar"}
+        result = template.to_hash
+        result.dig(:metadata, :labels, :"app.kubernetes.io/name").must_equal "Bar"
+        result.dig(:spec, :template, :metadata, :labels, :"app.kubernetes.io/name").must_equal "Bar"
       end
     end
   end
@@ -1089,11 +1284,11 @@ describe Kubernetes::TemplateFiller do
     end
 
     it "allows selecting a dockerfile" do
-      raw_template[:spec][:template][:spec][:containers][0][:'samson/dockerfile'] = 'Bar'
+      raw_template[:spec][:template][:metadata][:annotations] = {'container-some-project-samson/dockerfile': 'Bar'}
       template.build_selectors.must_equal [["Bar", nil]]
     end
 
-    it "ignores images that should not be built" do
+    it "ignores images that should not be built via attribute" do
       raw_template[:spec][:template][:spec][:containers][0][:'samson/dockerfile'] = 'none'
       template.build_selectors.must_equal []
     end
@@ -1118,6 +1313,7 @@ describe Kubernetes::TemplateFiller do
 
       it "still allows selecting a dockerfile" do
         raw_template[:spec][:template][:spec][:containers] << {'samson/dockerfile': 'bar', image: 'baz', name: 'foo'}
+        raw_template[:spec][:template][:metadata][:annotations] = {'container-foo-samson/dockerfile': 'bar'}
         template.build_selectors.must_equal [["Dockerfile", nil], ["bar", nil]]
       end
     end
@@ -1130,15 +1326,18 @@ describe Kubernetes::TemplateFiller do
       end
 
       it "finds images from init-containers" do
-        add_init_container image: 'init-container', name: 'foo'
+        with_init_container image: 'init-container', name: 'foo'
         template.build_selectors.must_equal(
           [[nil, "docker-registry.zende.sk/truth_service:latest"], [nil, "init-container"]]
         )
       end
 
       it "does not include images that should not be built" do
-        raw_template[:spec][:template][:spec][:containers][0][:'samson/dockerfile'] = 'none'
-        raw_template[:spec][:template][:spec][:containers] << {'samson/dockerfile': 'bar', image: 'baz', name: 'baz'}
+        raw_template[:spec][:template][:metadata][:annotations] = {
+          'container-some-project-samson/dockerfile': 'none',
+          'container-baz-samson/dockerfile': 'bar'
+        }
+        raw_template[:spec][:template][:spec][:containers] << {image: 'baz', name: 'baz'}
 
         template.build_selectors.must_equal [[nil, 'baz']]
       end

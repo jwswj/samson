@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require_relative '../../test_helper'
 
-SingleCov.covered! uncovered: 1
+SingleCov.covered!
 
 describe Kubernetes::Release do
   let(:build)  { builds(:docker_build) }
@@ -38,87 +38,112 @@ describe Kubernetes::Release do
     end
   end
 
-  describe '#create_release' do
-    def assert_create_fails(&block)
-      refute_difference 'Kubernetes::Release.count' do
-        assert_raises Samson::Hooks::UserError, KeyError, &block
-      end
-    end
-
-    def assert_create_succeeds(params)
-      release = nil
-      assert_difference 'Kubernetes::Release.count', +1 do
-        release = Kubernetes::Release.create_release(params)
-      end
-      release
-    end
-
+  describe '#build_release_docs' do
     before do
       Kubernetes::TemplateFiller.any_instance.stubs(:set_image_pull_secrets)
     end
 
     it 'creates with 1 role' do
       expect_file_contents_from_repo
-      release = assert_create_succeeds(release_params)
-      release.release_docs.count.must_equal 1
+      release = Kubernetes::Release.build_release_with_docs(release_params)
+      release.must_be :valid?
+      release.release_docs.size.must_equal 1
       release.release_docs.first.kubernetes_role.id.must_equal app_server.id
       release.release_docs.first.kubernetes_role.name.must_equal app_server.name
+
+      assert_difference -> { Kubernetes::Release.count } => +1, -> { Kubernetes::ReleaseDoc.count } => +1 do
+        release.save
+      end
     end
 
     it 'creates with multiple roles' do
       2.times { expect_file_contents_from_repo }
-      release = assert_create_succeeds(multiple_roles_release_params)
-      release.release_docs.count.must_equal 2
+      release = Kubernetes::Release.build_release_with_docs(multiple_roles_release_params)
+      release.must_be :valid?
+      release.release_docs.size.must_equal 2
       release.release_docs.first.kubernetes_role.name.must_equal app_server.name
       release.release_docs.first.replica_target.must_equal 1
-      release.release_docs.first.limits_cpu.must_equal 1
-      release.release_docs.first.limits_memory.must_equal 50
       release.release_docs.second.kubernetes_role.name.must_equal resque_worker.name
       release.release_docs.second.replica_target.must_equal 2
-      release.release_docs.second.limits_cpu.must_equal 2
-      release.release_docs.second.limits_memory.must_equal 100
+
+      assert_difference -> { Kubernetes::Release.count } => +1, -> { Kubernetes::ReleaseDoc.count } => +2 do
+        release.save
+      end
     end
 
     it "fails to save with missing deploy groups" do
-      assert_create_fails do
-        release_params.delete :grouped_deploy_group_roles
-        Kubernetes::Release.create_release(release_params)
+      release_params.delete :grouped_deploy_group_roles
+      assert_raises Samson::Hooks::UserError do
+        Kubernetes::Release.build_release_with_docs(release_params)
       end
     end
 
     it "fails to save with empty deploy groups" do
-      assert_create_fails do
-        release_params[:grouped_deploy_group_roles].first.clear
-        Kubernetes::Release.create_release(release_params)
+      release_params[:grouped_deploy_group_roles].first.clear
+      assert_raises Samson::Hooks::UserError do
+        Kubernetes::Release.build_release_with_docs(release_params)
       end
     end
 
-    describe "blue green" do
-      before { app_server.blue_green = true }
+    it "fails to populate release docs when invalid" do
+      Kubernetes::Release.any_instance.expects(:valid?).returns(false)
+      Kubernetes::Release.build_release_with_docs(release_params).release_docs.must_be :empty?
+    end
 
-      it 'does not set when not using blue_green' do
-        app_server.blue_green = false
+    it "adds created_cluster_resources" do
+      role_config_file << <<~YAML
+        ---
+        apiVersion: templates.gatekeeper.sh/v1
+        kind: ConstraintTemplate
+        metadata:
+          name: foo
+          labels:
+            project: some-project
+            role: some-role
+        spec:
+          crd:
+            spec:
+              names:
+                kind: Foobar
+      YAML
+      expect_file_contents_from_repo
+      release = Kubernetes::Release.build_release_with_docs(release_params)
+      assert_valid release.release_docs.first
+      assert_valid release
+      release.release_docs.first.created_cluster_resources.must_equal(
+        "Foobar" => {"namespaced" => false}
+      )
+    end
+
+    describe "blue green" do
+      before do
         expect_file_contents_from_repo
-        assert_create_succeeds(release_params).blue_green_color.must_be_nil
+        app_server.blue_green = true
+      end
+
+      it 'defaults to blue when not using blue_green' do
+        app_server.blue_green = false
+        subject = Kubernetes::Release.build_release_with_docs(release_params)
+        subject.blue_green_color.must_equal "blue"
       end
 
       it 'creates first as blue' do
-        expect_file_contents_from_repo
-        assert_create_succeeds(release_params).blue_green_color.must_equal "blue"
+        subject = Kubernetes::Release.build_release_with_docs(release_params)
+        subject.blue_green_color.must_equal "blue"
       end
 
       it 'creates followup as green' do
-        expect_file_contents_from_repo
         release.blue_green_color = "blue"
         Kubernetes::Release.any_instance.expects(:previous_succeeded_release).returns(release)
-        assert_create_succeeds(release_params).blue_green_color.must_equal "green"
+        subject = Kubernetes::Release.build_release_with_docs(release_params)
+        subject.blue_green_color.must_equal "green"
       end
     end
   end
 
   describe "#clients" do
     it "is empty when there are no deploy groups" do
-      release.clients.must_equal []
+      release.clients("v1").must_equal []
     end
 
     it "returns scoped queries" do
@@ -127,31 +152,17 @@ describe Kubernetes::Release do
         resourceVersion: "1",
         items: [{}, {}]
       }.to_json)
-      release.clients.map { |c, q| c.get_pods(q).fetch(:items) }.first.size.must_equal 2
+      release.clients("v1").map { |c, q| c.get_pods(q).fetch(:items) }.first.size.must_equal 2
     end
 
     it "can scope queries by resource namespace" do
       release = kubernetes_releases(:test_release)
-      Kubernetes::Resource::Deployment.any_instance.stubs(namespace: "default")
+      Kubernetes::Resource::Base.any_instance.stubs(namespace: "default")
       stub_request(:get, %r{http://foobar.server/api/v1/namespaces/default/pods}).to_return(body: {
         resourceVersion: "1",
         items: [{}, {}]
       }.to_json)
-      release.clients.map { |c, q| c.get_pods(q).fetch(:items) }.first.size.must_equal 2
-    end
-
-    it "scoped statefulset for previous release since they do not update their labels when using patch" do
-      resource = {spec: {template: {metadata: {labels: {release_id: 123}}}}}
-      resource_mock = mock(
-        is_a?: true,
-        patch_replace?: true,
-        resource: resource,
-        kind: "StatefulSet",
-        namespace: 'pod1'
-      )
-      Kubernetes::Resource.expects(:build).returns(resource_mock)
-      release = kubernetes_releases(:test_release)
-      release.clients[0][1].must_equal namespace: "pod1", label_selector: "release_id=123,deploy_group_id=431971589"
+      release.clients("v1").map { |c, q| c.get_pods(q).fetch(:items) }.first.size.must_equal 2
     end
   end
 
@@ -167,13 +178,6 @@ describe Kubernetes::Release do
         release_id: 123,
         deploy_group_id: deploy_group.id
       )
-    end
-  end
-
-  describe "#url" do
-    it "builds" do
-      release.id = 123
-      release.url.must_equal "http://www.test-url.com/projects/foo/kubernetes/releases/123"
     end
   end
 
