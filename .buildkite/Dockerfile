@@ -1,4 +1,4 @@
-FROM ruby:2.5.3-slim
+FROM ruby:2.7.6-slim
 
 # Install dependencies
 RUN apt-get update \
