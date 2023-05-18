@@ -31,7 +31,7 @@ task :test do
   if groups > 1
     sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage --group #{group} --groups #{groups}"
   else
-    sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test"
+    sh "EAGER_LOAD=1 forking-test-runner test plugins/*/test --merge-coverage"
   end
 end
 

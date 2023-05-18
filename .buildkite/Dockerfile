@@ -1,46 +1,64 @@
 FROM ruby:2.7.6-slim
 
 # Install dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      build-essential \
-      default-libmysqlclient-dev \
-      libpq-dev \
-      libsqlite3-dev \
-      wget \
-      apt-transport-https \
-      git \
-      curl \
-      gnupg2 \
-  && curl -sL https://deb.nodesource.com/setup_6.x | bash - \
-  && apt-get install nodejs -y \
-  && curl -fsSL https://get.docker.com | bash - \
-  && wget -qc https://github.com/betalo-sweden/await/releases/download/v0.4.0/await-linux-amd64 \
-  && install await-linux-amd64 /usr/local/bin/await \
-  && apt-get clean \
-  && rm -rf /var/lib/apt/lists/*
+RUN \
+  apt-get update && \
+  apt-get install -y --no-install-recommends \
+    build-essential \
+    default-libmysqlclient-dev \
+    libpq-dev \
+    libsqlite3-dev \
+    wget \
+    apt-transport-https \
+    git \
+    openssh-client \
+    curl \
+    gnupg2 \
+    nodejs \
+    npm && \
+  rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://get.docker.com | bash -
 
 WORKDIR /app
 
-# Drop privs to samson user as some tests expect non-root
-RUN groupadd -r samson && useradd -r -g samson -d /app samson \
-  && chown -R samson:samson /app
+# Mostly static
+COPY .ruby-version config.ru Rakefile .env.virtualbox ./
+COPY bin bin
+COPY public public
+COPY db db
+COPY .env.bootstrap .env
+COPY .env.test .env.test
 
-USER samson
+# NPM
+COPY package.json ./
+RUN npm install --silent >/dev/null
 
-# Copy in npm deps
-COPY package.json /app/package.json
-RUN npm install --silent
+# Gems
+COPY Gemfile Gemfile.lock ./
+COPY plugins plugins
+RUN bundle install --quiet --jobs 4
 
-# Copy in ruby deps
-COPY .ruby-version Gemfile Gemfile.lock /app/
-COPY plugins /app/plugins
-RUN bundle install --jobs 8
+# Code
+COPY config config
+COPY app app
+COPY lib lib
 
-# Copy source code
-COPY --chown=samson:samson . /app/
-COPY --chown=samson:samson .env.bootstrap /app/.env
+# Tests
+COPY test test
+
+# Assets
+COPY vendor/assets vendor/assets
+
+# # Drop privs to samson user as some tests expect non-root
+# RUN groupadd -r samson && useradd -r -g samson -d /app samson \
+#   && chown -R samson:samson /app
+
+# USER samson
+
 RUN ./bin/decode_dot_env .env
+RUN PRECOMPILE=1 bundle exec rake assets:precompile
 
-ARG RAILS_ENV=development
-RUN bundle exec rake assets:precompile
+# # Copy source code
+# COPY --chown=samson:samson . /app/
+# COPY --chown=samson:samson .env.bootstrap /app/.env
