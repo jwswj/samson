@@ -57,7 +57,7 @@ COPY vendor/assets vendor/assets
 # USER samson
 
 RUN ./bin/decode_dot_env .env
-RUN PRECOMPILE=1 bundle exec rake assets:precompile
+RUN RAILS_ENV=test PRECOMPILE=1 bundle exec rake assets:precompile
 
 # # Copy source code
 # COPY --chown=samson:samson . /app/
