@@ -29,6 +29,9 @@ COPY public public
 COPY db db
 COPY .env.bootstrap .env
 COPY .env.test .env.test
+COPY Dockerfile Dockerfile
+COPY docs docs
+COPY .dockerignore .dockerignore
 
 # NPM
 COPY package.json ./

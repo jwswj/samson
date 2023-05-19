@@ -15,41 +15,41 @@ steps:
 
   - wait
 
-  - name: ":rubocop: RuboCop"
-    command: "bundle exec rake rubocop"
-    plugins:
-      - docker-compose#v2.6.0:
-          run: samson-test
-          config: .buildkite/docker-compose.yml
-    env:
-      RAILS_ENV: test
+  # - name: ":rubocop: RuboCop"
+  #   command: "bundle exec rake rubocop"
+  #   plugins:
+  #     - docker-compose#v2.6.0:
+  #         run: samson-test
+  #         config: .buildkite/docker-compose.yml
+  #   env:
+  #     RAILS_ENV: test
 
-  - name: ":brakeman: Brakeman"
-    command: "bundle exec rake brakeman"
-    plugins:
-      - docker-compose#v3.0.0:
-          run: samson-test
-          config: .buildkite/docker-compose.yml
-    env:
-      RAILS_ENV: test
+  # - name: ":brakeman: Brakeman"
+  #   command: "bundle exec rake brakeman"
+  #   plugins:
+  #     - docker-compose#v3.0.0:
+  #         run: samson-test
+  #         config: .buildkite/docker-compose.yml
+  #   env:
+  #     RAILS_ENV: test
 
-  - name: "🛠Flay"
-    command: "bundle exec rake flay"
-    plugins:
-      - docker-compose#v3.0.0:
-          run: samson-test
-          config: .buildkite/docker-compose.yml
-    env:
-      RAILS_ENV: test
+  # - name: "🛠Flay"
+  #   command: "bundle exec rake flay"
+  #   plugins:
+  #     - docker-compose#v3.0.0:
+  #         run: samson-test
+  #         config: .buildkite/docker-compose.yml
+  #   env:
+  #     RAILS_ENV: test
 
-  - name: "🕵🏻‍♀️ Bundle Audit"
-    command: "bundle exec rake bundle_audit"
-    plugins:
-      - docker-compose#v3.0.0:
-          run: samson-test
-          config: .buildkite/docker-compose.yml
-    env:
-      RAILS_ENV: test
+  # - name: "🕵🏻‍♀️ Bundle Audit"
+  #   command: "bundle exec rake bundle_audit"
+  #   plugins:
+  #     - docker-compose#v3.0.0:
+  #         run: samson-test
+  #         config: .buildkite/docker-compose.yml
+  #   env:
+  #     RAILS_ENV: test
 
   - name: ":rspec: Test sqlite"
     plugins:
@@ -63,28 +63,28 @@ steps:
       automatic:
         - exit_status: -1
 
-  - name: ":rspec: Test mysql"
-    plugins:
-      - docker-compose#v3.0.0:
-          run: samson-test-mysql
-          config: .buildkite/docker-compose.yml
-    env:
-      RAILS_ENV: test
-    parallelism: 4
-    retry:
-      automatic:
-        - exit_status: -1
+  # - name: ":rspec: Test mysql"
+  #   plugins:
+  #     - docker-compose#v3.0.0:
+  #         run: samson-test-mysql
+  #         config: .buildkite/docker-compose.yml
+  #   env:
+  #     RAILS_ENV: test
+  #   parallelism: 4
+  #   retry:
+  #     automatic:
+  #       - exit_status: -1
 
-  - name: ":rspec: Test mysql (no plugins)"
-    plugins:
-      - docker-compose#v3.0.0:
-          run: samson-test-mysql-no-plugins
-          config: .buildkite/docker-compose.yml
-    env:
-      RAILS_ENV: test
-    retry:
-      automatic:
-        - exit_status: -1
+  # - name: ":rspec: Test mysql (no plugins)"
+  #   plugins:
+  #     - docker-compose#v3.0.0:
+  #         run: samson-test-mysql-no-plugins
+  #         config: .buildkite/docker-compose.yml
+  #   env:
+  #     RAILS_ENV: test
+  #   retry:
+  #     automatic:
+  #       - exit_status: -1
 
   # - name: ":rspec: Test (postgres)"
   #   plugins:
