@@ -108,7 +108,7 @@ Kubernetes::Release
 
 ### Docker Images
 
-(To opt out of this feature set `metadata.annotations.container-nameofcontainer-samson/dockerfile: none`)
+(To opt out of this feature set in pod-template `metadata.annotations.container-nameofcontainer-samson/dockerfile: none`)
 
 For each container (including init containers) Samson finds or creates a matching Docker image for the Git SHA that is being deployed.
 Samson always sets the Docker digest, and not a tag, to make deployments immutable.
@@ -156,7 +156,7 @@ Prefer `spec.updateStrategy.type=RollingUpdate`
 ### Server-side apply
 
 Set `metadata.annotations.samson/server_side_apply='true'` and use a valid template.
-This only works for kubernetes 1.16+ clusters, but will soon be the default way samson works,
+This only works for kubernetes 1.16+ clusters,
 see [kubernetes docs](https://kubernetes.io/docs/reference/using-api/api-concepts/#server-side-apply) for details.
 
 ### Duplicate deployments
@@ -200,6 +200,15 @@ to make all kubernetes deploys that do not use a `metadata.labels.team` / `spec.
 Samson sets namespaces to the deploygroups `kubernetes_namespace` if no `metadata.namespace` is set in the resource.
 
 For namespace-less resources, set `metadata.namespace:` (which will result in `nil`)
+
+### Deployments without replicas
+
+When using a `HorizontalPodAutoscaler` for your `Deployment` or `StatefulSet`, it is recommended to not set `spec.replicas`.
+
+on the `Deployment`
+- set `metadata.annotations.samson/NoReplicas: "true"`
+- set `metadata.annotations.samson/server_side_apply: "true"`
+- do not set `spec.replicas`
 
 ### Using custom resource names
 

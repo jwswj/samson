@@ -69,15 +69,15 @@ end
 
 desc "'Run brakeman, use `bundle exec brakeman --add-engine-path 'plugins/*' -I` to add or remove obsolete ignores"
 task :brakeman do
-  system("brakeman --no-pager --add-engine-path 'plugins/*' --ensure-latest") ||
+  system("brakeman --no-pager --add-engine-path 'plugins/*'") ||
+    # TODO: Need to readd --ensure-latest once upgraded to ruby 3.0
+    # system("brakeman --no-pager --add-engine-path 'plugins/*' --ensure-latest") ||
     abort("Fix the found issues, or add new ignored with:\nbundle exec brakeman --add-engine-path 'plugins/*' -I")
 end
 
 desc 'Scan for gem vulnerabilities'
 task :bundle_audit do
-  # TODO: remove CVE-2015-9284 once https://github.com/omniauth/omniauth/pull/809 is resolved
-  # TODO: remove CVE-2022-0759 once local development works on newer version
-  sh "bundle-audit check --update --ignore CVE-2015-9284 CVE-2022-0759"
+  sh "bundle-audit check --update"
 end
 
 desc "Run rubocop"
@@ -106,6 +106,8 @@ task :flay do
     'plugins/kubernetes/app/models/kubernetes/deploy_group_role.rb', # similar but slightly different validations
     'plugins/flowdock/app/views/samson_flowdock/_fields.html.erb', # simple html
     'plugins/datadog/app/views/samson_datadog/_datadog_monitor_queries_fields.html.erb', # simple html
+    'plugins/zendesk/app/views/samson_zendesk/notification.erb', # simple text
+    'app/views/deploy_mailer/_commit_info.text.erb', # simple text
   ]
   flay = Flay.run([*files, '--mass', '25']) # mass threshold is shown mass / occurrences
   abort "Code duplication found" if flay.report.any?
